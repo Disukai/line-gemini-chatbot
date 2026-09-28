@@ -40,8 +40,13 @@ async def lifespan(app: FastAPI):
     logger.info("🤖 Model: %s", settings.gemini_model)
     logger.info("👥 Bot Name: %s", settings.bot_name)
     logger.info("🎯 Group Trigger Mode: %s", settings.group_trigger_mode)
+    logger.info("⏰ Proactive Chatter: %s (Every %.1f-%.1f hrs)", settings.enable_proactive_chatter, settings.chatter_interval_min_hours, settings.chatter_interval_max_hours)
+    logger.info("📰 Morning News: %s (%02d:%02d BKK time)", settings.enable_morning_news, settings.morning_news_hour, settings.morning_news_minute)
     logger.info("==================================================")
+    from app.scheduler import scheduler
+    scheduler.start()
     yield
+    scheduler.stop()
     logger.info("🛑 LINE Gemini Chatbot shutting down.")
 
 
@@ -66,10 +71,13 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    from app.chat_tracker import chat_tracker
     return {
         "status": "healthy",
         "gemini_configured": bool(settings.gemini_api_key),
-        "line_configured": bool(settings.line_channel_secret and settings.line_channel_access_token)
+        "line_configured": bool(settings.line_channel_secret and settings.line_channel_access_token),
+        "scheduler_enabled": settings.enable_proactive_chatter or settings.enable_morning_news,
+        "active_groups_count": len(chat_tracker.get_active_group_ids())
     }
 
 

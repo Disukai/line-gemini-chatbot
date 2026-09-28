@@ -90,6 +90,32 @@ class Settings(BaseSettings):
         description="Show 'typing/loading...' animation in LINE while generating response"
     )
 
+    # Autonomous Proactive Schedulers
+    enable_proactive_chatter: bool = Field(
+        default=True,
+        description="Enable periodic spontaneous conversation openers in active groups"
+    )
+    chatter_interval_min_hours: float = Field(
+        default=3.5,
+        description="Minimum hours between random conversation openers"
+    )
+    chatter_interval_max_hours: float = Field(
+        default=5.0,
+        description="Maximum hours between random conversation openers"
+    )
+    enable_morning_news: bool = Field(
+        default=True,
+        description="Enable daily morning news briefing broadcast to active groups"
+    )
+    morning_news_hour: int = Field(
+        default=8,
+        description="Hour of day (0-23 in Bangkok time UTC+7) to send morning news briefing"
+    )
+    morning_news_minute: int = Field(
+        default=0,
+        description="Minute of hour (0-59 in Bangkok time UTC+7) to send morning news briefing"
+    )
+
     # Server settings
     host: str = Field(default="0.0.0.0", description="Server bind host")
     port: int = Field(default=8000, description="Server bind port")
@@ -114,10 +140,11 @@ class Settings(BaseSettings):
         """Ordered list of Gemini model candidates for resilient fallback."""
         base = [
             self.gemini_model,
+            "gemini-3.6-flash",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
             "gemini-3.5-flash-lite",
             "gemini-flash-lite-latest",
-            "gemini-3.6-flash",
-            "gemini-3.1-flash-lite",
             "gemini-3.8-flash",
         ]
         seen = set()

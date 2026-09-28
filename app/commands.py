@@ -28,6 +28,8 @@ HELP_TEXT = f"""✨ **LINE AI เพื่อนซี้ประจำกล�
 4. คุยในแชทส่วนตัวแบบ 1 ต่อ 1 ได้ตลอดเวลา
 
 🛠️ **คำสั่งพิเศษ (/Commands):**
+- `/news` : อัปเดตและสรุปข่าวดังวันนี้ล่าสุด สไตล์เพื่อนเล่าให้ฟังทันที
+- `/schedule [on|off]` : เปิด/ปิด ระบบสุ่มทักเปิดบทสนทนาทุก 4-5 ชม. และสรุปข่าวดังยามเช้า
 - `/plan [เรื่องที่ต้องการวางแผน]` : วางแผนกลยุทธ์ Action Plan ละเอียดจัดเต็ม ขั้นตอน และจุดตาย
 - `/boost [เรื่อง/ปัญหา/ความเหนื่อย]` : บูสต์พลังใจ ปลุกไฟ พร้อมทริคทะลวงจุดตัน ลุยต่อทันที
 - `/goal [เป้าหมายที่อยากทำ]` : แปลงเป้าหมายเป็น SMART Goal + เช็คลิสต์ 3 สิ่งที่ต้องทำวันนี้
@@ -157,5 +159,44 @@ def execute_command(
             history_context=history_context,
             sender_name=sender_name
         )
+
+    elif cmd in ("news", "ข่าว", "อัปเดตข่าว"):
+        from app.news_service import generate_morning_news_briefing
+        persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
+        return generate_morning_news_briefing(persona_key)
+
+    elif cmd in ("chatter", "ทัก", "เปิดประเด็น"):
+        persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
+        system_inst = build_system_prompt(settings.bot_name, persona_key)
+        prompt = (
+            f"คุณคือ {settings.bot_name} เพื่อนสนิทในกลุ่มไลน์\n"
+            f"ช่วยทักขึ้นมาเปิดประเด็นคุยกับเพื่อนในกลุ่มหน่อย 1-2 ประโยค สไตล์เพื่อนสนิทกวนๆ ฮาๆ คุยสนุก ชวนคุยหรือถามอะไรก็ได้"
+        )
+        return gemini_client.generate_chat_response(
+            user_message=prompt,
+            system_instruction=system_inst,
+            history_context=history_context,
+            sender_name="ระบบเปิดบทสนทนา"
+        )
+
+    elif cmd == "schedule":
+        from app.chat_tracker import chat_tracker
+        target = args.strip().lower()
+        if target in ("on", "เปิด", "true", "1"):
+            chat_tracker.set_schedule_enabled(chat_id, True)
+            return "🔔 เปิดระบบทักอัตโนมัติ (ทักเปิดบทสนทนาทุก 4-5 ชม. + สรุปข่าวดังทุกเช้า) สำหรับกลุ่มนี้แล้วครับ!"
+        elif target in ("off", "ปิด", "false", "0"):
+            chat_tracker.set_schedule_enabled(chat_id, False)
+            return "🔕 ปิดระบบทักอัตโนมัติสำหรับกลุ่มนี้แล้วครับ (บอทจะตอบเฉพาะเวลาคุยในกลุ่มตามปกติ)"
+        else:
+            status = "เปิดใช้งานอยู่ 🔔" if chat_tracker.is_schedule_enabled(chat_id) else "ปิดอยู่ 🔕"
+            return (
+                f"⏰ **ระบบทักอัตโนมัติของกลุ่มนี้:** {status}\n\n"
+                f"- สรุปข่าวดังยามเช้า: ทุกวันเวลา ~08:00 น.\n"
+                f"- สุ่มทักเปิดบทสนทนา: ทุกๆ 4-5 ชั่วโมง (ช่วงเวลา 09:00 - 23:00 น.)\n\n"
+                f"💡 วิธีเปิด/ปิด:\n"
+                f"- พิมพ์ `/schedule on` : เปิดระบบ\n"
+                f"- พิมพ์ `/schedule off` : ปิดระบบ"
+            )
 
     return f"คำสั่ง `/{cmd}` ไม่มีนะเพื่อน ลองพิมพ์ `/help` เพื่อดูคำสั่งทั้งหมดได้เลย"

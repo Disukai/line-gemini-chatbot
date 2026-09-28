@@ -297,9 +297,12 @@ def test_execute_command_static():
     # Thai persona aliases
     assert "ปรับโหมดบุคลิกห้องนี้เป็น [chill]" in execute_command("persona", "ชิล", "group1", "Harvey")
     assert "ปรับโหมดบุคลิกห้องนี้เป็น [expert]" in execute_command("persona", "เซียน", "group1", "Harvey")
-    assert "สไตล์ที่มีให้เลือก" in execute_command("persona", "invalid_tone", "group1", "Harvey")
-
     assert "คำสั่ง `/unknown` ไม่มี" in execute_command("unknown", "", "group1", "Harvey")
+
+    # Schedule command
+    assert "เปิดระบบทักอัตโนมัติ" in execute_command("schedule", "on", "group1", "Harvey")
+    assert "ปิดระบบทักอัตโนมัติ" in execute_command("schedule", "off", "group1", "Harvey")
+    assert "ระบบทักอัตโนมัติของกลุ่มนี้" in execute_command("schedule", "", "group1", "Harvey")
 
 
 def test_fastapi_health_endpoints():

@@ -31,6 +31,7 @@ from app.memory import memory_manager
 from app.persona import build_system_prompt
 from app.commands import parse_command, execute_command
 from app.gemini_client import gemini_client
+from app.chat_tracker import chat_tracker
 
 logger = logging.getLogger("line_gemini_bot")
 
@@ -308,6 +309,7 @@ async def process_text_message(event: MessageEvent):
     """Handles an incoming text message event asynchronously and non-blockingly."""
     text = event.message.text
     chat_id, user_id, is_group = extract_chat_and_user_ids(event)
+    chat_tracker.register_chat(chat_id, "group" if is_group else "user")
 
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
@@ -426,6 +428,7 @@ async def process_text_message(event: MessageEvent):
 async def process_image_message(event: MessageEvent):
     """Handles an incoming image message event."""
     chat_id, user_id, is_group = extract_chat_and_user_ids(event)
+    chat_tracker.register_chat(chat_id, "group" if is_group else "user")
 
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
@@ -522,6 +525,7 @@ async def process_image_message(event: MessageEvent):
 async def process_join_event(event: JoinEvent):
     """Greets the group warmly when the bot is added to a LINE group or room."""
     chat_id, _, _ = extract_chat_and_user_ids(event)
+    chat_tracker.register_chat(chat_id, "group")
     welcome_text = (
         f"โย่วทุกคน! 👋 ผม '{settings.bot_name}' สมาชิกใหม่สายซัพพอร์ตประจำกลุ่มนะครับ 555 "
         f"คุยเล่น ปรึกษา แซว ปลุกไฟ หรือวางแผนงานได้หมดเหมือนเพื่อนคนนึงเลย!\n\n"
