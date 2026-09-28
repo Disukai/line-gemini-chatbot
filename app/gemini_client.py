@@ -87,8 +87,9 @@ class GeminiClient:
             try:
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.8,
-                    max_output_tokens=300,
+                    temperature=0.85,
+                    max_output_tokens=800,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
                 )
                 response = self._client.models.generate_content(
@@ -102,7 +103,7 @@ class GeminiClient:
                     candidate = response.candidates[0]
                     finish_reason = getattr(candidate, "finish_reason", None)
                     if finish_reason and str(finish_reason).upper() in ["SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT"]:
-                        return "เรื่องนี้ระบบแจ้งว่าติดฟิลเตอร์ความปลอดภัยแฮะเพื่อน 555 ขอผ่านก่อนนะ ลองเปลี่ยนประเด็นคุยดู!"
+                        return "อันนี้ติดฟิลเตอร์ความปลอดภัยเฉยเลยแก 5555555 ขอผ่านก่อนนะ ลองเปลี่ยนเรื่องคุยดู!"
 
                 if response and response.text:
                     self._working_model = model_name
@@ -112,7 +113,7 @@ class GeminiClient:
                 last_error = gen_err
 
         logger.error("All Gemini model candidates failed. Last error: %s", last_error)
-        return "แป๊บนะเพื่อน สมองเบลอชั่วคราว มีบั๊กจากฝั่ง API ลองทักมาใหม่อีกรอบดิ๊ 555"
+        return "แป๊บนะแกรรร สมองเบลอชั่วคราว มีบั๊กจากฝั่ง API ลองทักมาใหม่อีกทีดิ๊ 5555555"
 
 
 gemini_client = GeminiClient()

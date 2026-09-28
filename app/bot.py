@@ -373,9 +373,10 @@ async def process_text_message(event: MessageEvent):
             if is_spontaneous:
                 user_msg = (
                     f"{text}\n\n"
-                    f"[หมายเหตุสำหรับ {settings.bot_name}: คุณไม่ได้ถูกแท็กโดยตรง แต่คุณได้ยินเพื่อนคุยกันในกลุ่ม "
-                    f"ให้ตอบแจมหรือแซวสั้นๆ คมๆ 1-2 ประโยค แบบเพื่อนสนิทที่นั่งฟังอยู่แล้วพูดแทรกขึ้นมาขำๆ "
-                    f"ห้ามแนะนำตัว ห้ามตอบยาว ห้ามเป็นทางการ]"
+                    f"[บรีฟสำหรับ {settings.bot_name}: เพื่อนกำลังคุยกันในกลุ่ม ให้ตอบแจมหรือแซวสั้นๆ 1-2 ประโยค "
+                    f"ฟีลเพื่อน Gen Z / Gen Alpha ในกลุ่มนั่งฟังอยู่แล้วสวนกลับมาแบบกวนๆ หรือช็อตฟีลขำๆ "
+                    f"ใช้ภาษาแชทวัยรุ่นไทยสมัยนี้ (นอย, อ่อม, ทำถึง, ฉ่ำ, ช็อตฟีล, เกิ๊น, ตัวแม่, ของแทร่, 5555555) "
+                    f"ห้ามใช้สำนวนแปลหนังฝรั่งหรือนิยายเด็ดขาด ห้ามแนะนำตัว]"
                 )
             else:
                 user_msg = text
@@ -480,7 +481,7 @@ async def process_image_message(event: MessageEvent):
         system_instruction = build_system_prompt(settings.bot_name, persona_key)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
 
-        user_prompt = "เพื่อนส่งรูปนี้มาในห้องไลน์ ช่วยดูรูปแล้วคอมเมนต์ แซว หรือพูดคุยสั้นๆ 1-2 ประโยค สไตล์เพื่อนสนิทในกลุ่มที่เป็นคนจริงๆ เป็นธรรมชาติ"
+        user_prompt = "เพื่อนส่งรูปนี้มาในห้องไลน์ ช่วยดูรูปแล้วคอมเมนต์ แซว หรือเม้าท์สั้นๆ 1-2 ประโยค ฟีลเพื่อน Gen Z ในกลุ่มไลน์แซวกัน (เช่น โฮ่งมาก, ติดแกลม, สภาพพพ, ทำถึงเกิ๊น) ห้ามพูดทางการ ห้ามสำนวนนิยาย"
 
         reply_text = await asyncio.to_thread(
             gemini_client.generate_chat_response,
@@ -527,13 +528,13 @@ async def process_join_event(event: JoinEvent):
     chat_id, _, _ = extract_chat_and_user_ids(event)
     chat_tracker.register_chat(chat_id, "group")
     welcome_text = (
-        f"โย่วทุกคน! 👋 ผม '{settings.bot_name}' สมาชิกใหม่สายซัพพอร์ตประจำกลุ่มนะครับ 555 "
-        f"คุยเล่น ปรึกษา แซว ปลุกไฟ หรือวางแผนงานได้หมดเหมือนเพื่อนคนนึงเลย!\n\n"
-        f"📌 วิธีเรียกผม:\n"
+        f"ดีค่าา / ดีครับทุกคนนน! โทมัส ({settings.bot_name}) รายงานตัววว 5555555 "
+        f"เข้ามาช่วยปั่น ช่วยเม้าท์ ชวนคุยในกลุ่มละนะแกรรร ใครมีอะไรให้ช่วยคิด วางแผนงาน แซวเพื่อน หรืออยากได้คนร่วมวงเม้าท์ เรียกชั้นได้ตลอดเลยยย\n\n"
+        f"📌 วิธีเรียกชั้น:\n"
         f"- พิมพ์ชื่อ '{settings.bot_name}' หรือแท็ก @{settings.bot_name}\n"
-        f"- ตอบกลับ (Quote Reply) ข้อความของผม\n"
-        f"- คำสั่งเด็ด: `/plan` (วางแผนงาน), `/boost` (ปลุกพลังใจ), `/goal` (ตั้งเป้าหมาย), `/help`\n\n"
-        f"ยินดีที่ได้รู้จักทุกคนนะเพื่อนๆ พร้อมลุย! 🚀"
+        f"- ตอบกลับ (Quote Reply) ข้อความของชั้น\n"
+        f"- คำสั่งเด็ด: `/news` (สรุปข่าวดังวันนี้แบบทำถึง), `/plan` (วางแผนงานแบบตัวแม่), `/boost`, `/help`\n\n"
+        f"พร้อมเปิดตี้ละพวกแกรรร ลุยยยย 🔥"
     )
     with get_api_client() as api_client:
         messaging_api = MessagingApi(api_client)
@@ -555,14 +556,15 @@ async def process_join_event(event: JoinEvent):
 async def process_follow_event(event: FollowEvent):
     """Greets a user when they add the bot in a 1-on-1 private chat."""
     welcome_text = (
-        f"หวัดดีครับ! 👋 ผม '{settings.bot_name}' เพื่อนซี้ AI ประจำตัวคุณนะ 555\n"
-        f"คุยเล่น ปรึกษาปัญหาชีวิต วางแผนงาน หรือตั้งเป้าหมายได้ตลอดเวลาเลย\n\n"
-        f"💡 ลองพิมพ์คุยเล่น หรือใช้คำสั่ง:\n"
-        f"- `/plan [เรื่อง]` : วางแผนกลยุทธ์แบบ Step-by-Step\n"
-        f"- `/boost [เรื่อง]` : ปลุกพลังใจและวิธีทะลวงจุดตัน\n"
-        f"- `/goal [เรื่อง]` : แปลงเป้าหมายเป็น SMART Goal\n"
+        f"หวัดดีแกรรร! 👋 เรา '{settings.bot_name}' เพื่อนซี้ AI ประจำตัวแกเอง 5555555\n"
+        f"มีอะไรมาเม้าท์ มาปรึกษา วางแผนงาน หรือบ่นชีวิตได้ตลอดเวลาเลยนะ ฟีลเพื่อนสนิทคุยกันชิลๆ\n\n"
+        f"💡 ลองพิมพ์คุยเล่น หรือเล่นคำสั่งจึ้งๆ:\n"
+        f"- `/news` : สรุปข่าวดังวันนี้แบบฉ่ำๆ ไม่ตกเทรนด์\n"
+        f"- `/plan [เรื่อง]` : วางแผนกลยุทธ์แบบทำถึง Step-by-Step\n"
+        f"- `/boost [เรื่อง]` : ปลุกพลังใจ บูสต์เอเนอร์จี้เวลาหมดไฟ\n"
+        f"- `/goal [เรื่อง]` : ตั้งเป้าหมาย SMART Goal ชัดเจน\n"
         f"- `/help` : ดูคำสั่งทั้งหมด\n\n"
-        f"หรือดึงผมเข้ากลุ่มส่วนตัวไว้คุยกับแก๊งเพื่อนก็ได้นะ! 🚀"
+        f"หรือดึงเราเข้ากลุ่มไลน์ไปป่วนแก๊งเพื่อนก็ได้นะแกกก! 🚀"
     )
     with get_api_client() as api_client:
         messaging_api = MessagingApi(api_client)
