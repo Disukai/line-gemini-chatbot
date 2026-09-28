@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: line-gemini-thomas
+    env: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: BOT_NAME
+        value: Thomas
+      - key: BOT_NICKNAMES_STR
+        value: thomas,โทมัส,โธมัส,บอท,ai,เพื่อน
+      - key: GROUP_TRIGGER_MODE
+        value: mention
+      - key: DEFAULT_PERSONA
+        value: friend
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

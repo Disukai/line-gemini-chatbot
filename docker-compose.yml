@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  line-chatbot:
+    build: .
+    container_name: line-gemini-chatbot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PORT=8000
