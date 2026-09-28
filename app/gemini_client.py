@@ -90,33 +90,37 @@ class GeminiClient:
         last_error = None
 
         for model_name in candidates:
-            try:
-                config = types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.85,
-                    max_output_tokens=1500,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-                )
-                response = self._client.models.generate_content(
-                    model=model_name,
-                    contents=prompt_parts,
-                    config=config
-                )
+            for attempt in range(2):
+                try:
+                    config = types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.85,
+                        max_output_tokens=1500
+                    )
+                    response = self._client.models.generate_content(
+                        model=model_name,
+                        contents=prompt_parts,
+                        config=config
+                    )
 
-                # Check if candidates were blocked by safety filters
-                if response and hasattr(response, "candidates") and response.candidates:
-                    candidate = response.candidates[0]
-                    finish_reason = getattr(candidate, "finish_reason", None)
-                    if finish_reason and str(finish_reason).upper() in ["SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT"]:
-                        return "อันนี้ติดฟิลเตอร์ความปลอดภัยเฉยเลยแก 5555555 ขอผ่านก่อนนะ ลองเปลี่ยนเรื่องคุยดู!"
+                    # Check if candidates were blocked by safety filters
+                    if response and hasattr(response, "candidates") and response.candidates:
+                        candidate = response.candidates[0]
+                        finish_reason = getattr(candidate, "finish_reason", None)
+                        if finish_reason and str(finish_reason).upper() in ["SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT"]:
+                            return "อันนี้ติดฟิลเตอร์ความปลอดภัยเฉยเลยแก 5555555 ขอผ่านก่อนนะ ลองเปลี่ยนเรื่องคุยดู!"
 
-                if response and response.text:
-                    self._working_model = model_name
-                    return response.text.strip()
-            except Exception as gen_err:
-                logger.warning("generate_content failed on model %s: %s", model_name, gen_err)
-                last_error = gen_err
+                    if response and response.text:
+                        self._working_model = model_name
+                        return response.text.strip()
+                except Exception as gen_err:
+                    err_str = str(gen_err)
+                    logger.warning("generate_content attempt %d failed on model %s: %s", attempt + 1, model_name, gen_err)
+                    last_error = gen_err
+                    if "503" in err_str and attempt == 0:
+                        time.sleep(1.2)
+                        continue
+                    break
 
         logger.error("All Gemini model candidates failed. Last error: %s", last_error)
         return "แป๊บนะแกรรร สมองเบลอชั่วคราว มีบั๊กจากฝั่ง API ลองทักมาใหม่อีกทีดิ๊ 5555555"
