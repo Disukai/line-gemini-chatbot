@@ -30,8 +30,8 @@ class Settings(BaseSettings):
         description="Google Gemini API Key from Google AI Studio"
     )
     gemini_model: str = Field(
-        default="gemini-3.8-flash",
-        description="Gemini Model identifier (e.g. gemini-3.8-flash, gemini-3.7-flash, gemini-2.5-flash)"
+        default="gemini-3.6-flash",
+        description="Gemini Model identifier (e.g. gemini-3.6-flash, gemini-3.8-flash, gemini-3.5-flash-lite)"
     )
 
     # Bot Identity & Persona
@@ -87,7 +87,14 @@ class Settings(BaseSettings):
     @property
     def candidate_models(self) -> List[str]:
         """Ordered list of Gemini model candidates for resilient fallback."""
-        base = [self.gemini_model, "gemini-3.7-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+        base = [
+            self.gemini_model,
+            "gemini-3.6-flash",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+        ]
         seen = set()
         res = []
         for m in base:

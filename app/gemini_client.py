@@ -84,29 +84,6 @@ class GeminiClient:
         last_error = None
 
         for model_name in candidates:
-            # 1. Try Interactions API if text-only turn
-            if not image_bytes:
-                try:
-                    interaction = self._client.interactions.create(
-                        model=model_name,
-                        input=current_turn,
-                        system_instruction=system_instruction
-                    )
-                    if hasattr(interaction, "output_text") and interaction.output_text:
-                        self._working_model = model_name
-                        return interaction.output_text.strip()
-                    if hasattr(interaction, "steps") and interaction.steps:
-                        last_step = interaction.steps[-1]
-                        if hasattr(last_step, "content") and last_step.content:
-                            texts = [c.text for c in last_step.content if hasattr(c, "text") and c.text]
-                            if texts:
-                                self._working_model = model_name
-                                return "".join(texts).strip()
-                except Exception as inter_err:
-                    logger.debug("Interactions API on %s fell back: %s", model_name, inter_err)
-                    last_error = inter_err
-
-            # 2. Try generate_content API (supports multimodal Part directly)
             try:
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction,
