@@ -6,6 +6,7 @@ import logging
 from typing import Optional, Tuple
 from app.config import settings
 from app.persona import (
+    build_system_prompt,
     build_plan_prompt,
     build_boost_prompt,
     build_goal_prompt,

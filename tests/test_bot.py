@@ -565,3 +565,33 @@ def test_quote_reply_bot_binding():
     hist = manager.get_group_memory(chat_id).get_history_formatted("Thomas")
     assert "(ตอบกลับ Thomas (คุณ): \"ร้านหมูกระทะนี้เด็ดมากก ไปลองกัน!\")" in hist
 
+
+@pytest.mark.asyncio
+async def test_process_text_message_flow():
+    from app.bot import process_text_message
+
+    event = MagicMock()
+    event.reply_token = "test_token_123"
+    event.source.type = "user"
+    event.source.user_id = "U123456789"
+    event.message.text = "สวัสดีโธมัส สบายดีมั้ย"
+    event.message.id = "msg_test_001"
+    event.message.quoted_message_id = None
+    event.message.mention = None
+
+    with patch("app.bot.get_api_client") as mock_get_client, \
+         patch("app.bot.gemini_client.generate_chat_response", return_value="สบายดีมากกกกแก") as mock_gemini, \
+         patch("app.bot.MessagingApi") as mock_msg_api_cls:
+        
+        mock_client = MagicMock()
+        mock_get_client.return_value.__enter__.return_value = mock_client
+        mock_msg_api = MagicMock()
+        mock_msg_api_cls.return_value = mock_msg_api
+        
+        await process_text_message(event)
+        
+        # Verify gemini was called and reply was sent
+        assert mock_gemini.called
+        assert mock_msg_api.reply_message.called
+
+

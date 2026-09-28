@@ -324,6 +324,7 @@ async def process_text_message(event: MessageEvent):
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
         current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
+        bot_user_id = await asyncio.to_thread(get_bot_user_id, api_client)
 
         decision = should_trigger_response(
             text=text,
