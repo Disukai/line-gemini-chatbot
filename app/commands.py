@@ -96,7 +96,7 @@ def execute_command(
             memory_manager.set_trigger_mode(chat_id, canonical)
             return f"⚙️ ปรับโหมดการตอบของห้องนี้เป็น [{canonical}]:\n👉 {mode_descriptions[canonical]} เรียบร้อยแล้วเพื่อน!"
         else:
-            current = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
+            current = memory_manager.get_trigger_mode(chat_id, settings.effective_group_trigger_mode)
             return (
                 f"โหมดการตอบในกลุ่มที่มีให้เลือก:\n"
                 f"- `/mode chime_in` (หรือ `/mode แจม`) : ตอบเมื่อแท็ก + ร่วมแจมคุยบางทีอย่างเป็นธรรมชาติ (ค่าเริ่มต้น แนะนำ!)\n"

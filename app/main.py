@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 LINE Gemini Chatbot is starting up!")
     logger.info("🤖 Model: %s", settings.gemini_model)
     logger.info("👥 Bot Name: %s", settings.bot_name)
-    logger.info("🎯 Group Trigger Mode: %s", settings.group_trigger_mode)
+    logger.info("🎯 Group Trigger Mode: %s", settings.effective_group_trigger_mode)
     logger.info("⏰ Proactive Chatter: %s (Every %.1f-%.1f hrs)", settings.enable_proactive_chatter, settings.chatter_interval_min_hours, settings.chatter_interval_max_hours)
     logger.info("📰 Morning News: %s (%02d:%02d BKK time)", settings.enable_morning_news, settings.morning_news_hour, settings.morning_news_minute)
     logger.info("==================================================")

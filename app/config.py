@@ -30,8 +30,8 @@ class Settings(BaseSettings):
         description="Google Gemini API Key from Google AI Studio"
     )
     gemini_model: str = Field(
-        default="gemini-3.5-flash-lite",
-        description="Gemini Model identifier (e.g. gemini-3.5-flash-lite, gemini-flash-lite-latest, gemini-3.6-flash)"
+        default="gemini-3.1-flash-lite",
+        description="Gemini Model identifier (e.g. gemini-3.1-flash-lite, gemini-3.5-flash-lite, gemini-flash-lite-latest)"
     )
 
     # Bot Identity & Persona
@@ -150,18 +150,28 @@ class Settings(BaseSettings):
         return raw
 
     @property
+    def effective_group_trigger_mode(self) -> str:
+        """
+        Promotes legacy 'mention' setting to 'chime_in' unless overridden per-chat via /mode,
+        ensuring the bot naturally chimes in on questions and banter.
+        """
+        if self.group_trigger_mode in ("chime_in", "smart", "all"):
+            return self.group_trigger_mode
+        return "chime_in"
+
+    @property
     def candidate_models(self) -> List[str]:
         """Ordered list of Gemini model candidates for resilient fallback."""
         base = [
-            "gemini-3.5-flash-lite",
-            "gemini-3.6-flash",
             "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
             self.gemini_model,
-            "gemini-3-flash-preview",
+            "gemini-3.6-flash",
             "gemini-3.8-flash",
             "gemini-3.7-flash",
             "gemini-3.5-flash",
-            "gemini-flash-lite-latest",
+            "gemini-3-flash-preview",
             "gemini-flash-latest"
         ]
         seen = set()

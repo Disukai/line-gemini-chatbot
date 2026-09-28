@@ -324,7 +324,7 @@ async def process_text_message(event: MessageEvent):
 
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
-        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
+        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.effective_group_trigger_mode)
         bot_user_id = await asyncio.to_thread(get_bot_user_id, api_client)
 
         decision = should_trigger_response(
@@ -491,7 +491,7 @@ async def process_image_message(event: MessageEvent):
             logger.error("Failed to fetch image binary from LINE: %s", e)
             return
 
-        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
+        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.effective_group_trigger_mode)
 
         # Look up replied message if this image was sent as a quote reply
         quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None

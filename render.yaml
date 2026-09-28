@@ -10,7 +10,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: GEMINI_MODEL
-        value: gemini-3.5-flash-lite
+        value: gemini-3.1-flash-lite
       - key: BOT_NAME
         value: Thomas
       - key: BOT_NICKNAMES_STR
