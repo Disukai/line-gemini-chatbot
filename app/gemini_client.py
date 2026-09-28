@@ -123,7 +123,7 @@ class GeminiClient:
                     break
 
         logger.error("All Gemini model candidates failed. Last error: %s", last_error)
-        return "แป๊บนะแกรรร สมองเบลอชั่วคราว มีบั๊กจากฝั่ง API ลองทักมาใหม่อีกทีดิ๊ 5555555"
+        return "แป๊บนะมึง สมองเบลอชั่วคราว ฝั่ง API กำลัง cooked ทักมาใหม่อีกทีดิ๊ 5555555"
 
 
 gemini_client = GeminiClient()

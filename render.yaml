@@ -10,13 +10,13 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: GEMINI_MODEL
-        value: gemini-3.8-flash
+        value: gemini-3.5-flash-lite
       - key: BOT_NAME
         value: Thomas
       - key: BOT_NICKNAMES_STR
         value: thomas,โทมัส,โธมัส,บอท,ai,เพื่อน
       - key: GROUP_TRIGGER_MODE
-        value: mention
+        value: chime_in
       - key: DEFAULT_PERSONA
         value: friend
       - key: LINE_CHANNEL_ACCESS_TOKEN

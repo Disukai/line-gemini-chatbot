@@ -78,7 +78,7 @@ class Settings(BaseSettings):
         description="Minimum seconds between spontaneous chime-ins in a group"
     )
     spontaneous_min_messages: int = Field(
-        default=2,
+        default=1,
         description="Minimum non-bot messages required before another spontaneous chime-in"
     )
     max_history_per_group: int = Field(
@@ -88,6 +88,20 @@ class Settings(BaseSettings):
     enable_loading_animation: bool = Field(
         default=True,
         description="Show 'typing/loading...' animation in LINE while generating response"
+    )
+
+    # Cloud Keep-Alive Self-Ping (Prevents Render Free Tier Cold Starts / Sleep)
+    enable_keep_alive: bool = Field(
+        default=True,
+        description="Whether to periodically ping the public health endpoint to prevent idle container sleep"
+    )
+    keep_alive_url: str = Field(
+        default="https://line-gemini-thomas.onrender.com/health",
+        description="Public URL to ping for keeping the cloud container alive"
+    )
+    keep_alive_interval_seconds: int = Field(
+        default=480,
+        description="Interval in seconds between keep-alive pings (8 minutes)"
     )
 
     # Autonomous Proactive Schedulers
@@ -139,15 +153,15 @@ class Settings(BaseSettings):
     def candidate_models(self) -> List[str]:
         """Ordered list of Gemini model candidates for resilient fallback."""
         base = [
-            "gemini-3-flash-preview",
-            self.gemini_model,
             "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
-            "gemini-3.7-flash",
-            "gemini-3.8-flash",
             "gemini-3.6-flash",
+            "gemini-3.1-flash-lite",
+            self.gemini_model,
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
             "gemini-3.5-flash",
+            "gemini-flash-lite-latest",
             "gemini-flash-latest"
         ]
         seen = set()

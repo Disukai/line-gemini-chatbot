@@ -268,24 +268,25 @@ def should_trigger_response(
         if len(clean_text) < 2 or clean_text.lower() in ("ok", "k", "เค", "คับ", "ครับ", "ค่ะ", ".", "!", "?", "55"):
             return TriggerResult(False, False)
 
+        question_keywords = [
+            "มั้ย", "ไหม", "อะไร", "ใคร", "ที่ไหน", "ยังไง", "ทำไม",
+            "รึเปล่า", "ปะ", "ป่ะ", "ช่วยคิด", "แนะนำหน่อย", "ขอไอเดีย",
+            "ใครรู้บ้าง", "ดีไหม", "ดีมั้ย", "กินไร", "ทำไร", "ไปไหน", "เอาไง"
+        ]
+        is_question = any(kw in lower_text for kw in question_keywords) or clean_text.endswith("?")
+
         # Anti-spam guard: Check memory cooldown & minimum message gap
         if chat_id:
             mem = memory_manager.get_group_memory(chat_id)
             now = time.time()
-            if mem.messages_since_bot_spoke < settings.spontaneous_min_messages:
+            if not is_question and mem.messages_since_bot_spoke < settings.spontaneous_min_messages:
                 return TriggerResult(False, False)
             if mem.last_bot_reply_time > 0 and (now - mem.last_bot_reply_time) < settings.spontaneous_cooldown_seconds:
                 return TriggerResult(False, False)
 
         # Calculate dynamic chime-in probability
         prob = settings.spontaneous_base_rate
-
-        question_keywords = [
-            "มั้ย", "ไหม", "อะไร", "ใคร", "ที่ไหน", "ยังไง", "ทำไม",
-            "รึเปล่า", "ปะ", "ป่ะ", "ช่วยคิด", "แนะนำหน่อย", "ขอไอเดีย",
-            "ใครรู้บ้าง", "ดีไหม", "ดีมั้ย", "กินไร", "ทำไร", "ไปไหน", "เอาไง"
-        ]
-        if any(kw in lower_text for kw in question_keywords) or clean_text.endswith("?"):
+        if is_question:
             prob += settings.spontaneous_question_bonus
 
         slang_keywords = [

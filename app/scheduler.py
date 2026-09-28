@@ -203,10 +203,35 @@ class BackgroundScheduler:
             # Sleep 60 seconds between checks
             await asyncio.sleep(60)
 
+    async def _keep_alive_loop(self):
+        """Pings public health endpoint every 8 minutes to prevent Render free instance from sleeping."""
+        if not settings.enable_keep_alive or not settings.keep_alive_url:
+            return
+
+        logger.info(
+            "Render Keep-alive loop active: pings '%s' every %d seconds.",
+            settings.keep_alive_url,
+            settings.keep_alive_interval_seconds
+        )
+        # Initial brief delay before starting ping cycle
+        await asyncio.sleep(60)
+
+        while self._running:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get(settings.keep_alive_url)
+                    logger.debug("Render keep-alive ping response: %d", resp.status_code)
+            except Exception as e:
+                logger.warning("Render keep-alive ping non-critical failure: %s", e)
+
+            await asyncio.sleep(settings.keep_alive_interval_seconds)
+
     def start(self):
         if not self._running:
             self._running = True
             self._task = asyncio.create_task(self._loop())
+            self._keep_alive_task = asyncio.create_task(self._keep_alive_loop())
 
     def stop(self):
         if self._running:
@@ -214,6 +239,9 @@ class BackgroundScheduler:
             if self._task:
                 self._task.cancel()
                 self._task = None
+            if hasattr(self, "_keep_alive_task") and self._keep_alive_task:
+                self._keep_alive_task.cancel()
+                self._keep_alive_task = None
             logger.info("Autonomous Background Scheduler stopped.")
 
 
