@@ -24,12 +24,14 @@ HELP_TEXT = f"""✨ **LINE AI เพื่อนซี้ประจำกล�
 💡 **วิธีเรียกคุยในกลุ่ม:**
 1. แท็กชื่อ @{settings.bot_name} หรือพิมพ์ชื่อ "{settings.bot_name}" / "บอท" ในข้อความ
 2. ตอบกลับ (Reply/Quote) ข้อความของผม
-3. คุยในแชทส่วนตัวแบบ 1 ต่อ 1 ได้ตลอดเวลา
+3. ร่วมแจมคุยหรือแซวเป็นระยะตามธรรมชาติ (โดยไม่ต้องแท็ก) ในโหมดแจมคุย
+4. คุยในแชทส่วนตัวแบบ 1 ต่อ 1 ได้ตลอดเวลา
 
 🛠️ **คำสั่งพิเศษ (/Commands):**
 - `/plan [เรื่องที่ต้องการวางแผน]` : วางแผนกลยุทธ์ Action Plan ละเอียดจัดเต็ม ขั้นตอน และจุดตาย
 - `/boost [เรื่อง/ปัญหา/ความเหนื่อย]` : บูสต์พลังใจ ปลุกไฟ พร้อมทริคทะลวงจุดตัน ลุยต่อทันที
 - `/goal [เป้าหมายที่อยากทำ]` : แปลงเป้าหมายเป็น SMART Goal + เช็คลิสต์ 3 สิ่งที่ต้องทำวันนี้
+- `/mode [chime_in|mention|all]` : ปรับโหมดการตอบในกลุ่ม (แจมคุยเป็นธรรมชาติ / ตอบเมื่อแท็กเท่านั้น / ตอบทุกข้อความ)
 - `/persona [friend|chill|expert|snarky]` : ปรับบุคลิกของผม (เพื่อนซี้ / สายชิล / มือโปร / สายกวน)
 - `/reset` : ล้างความจำการคุยในกลุ่มนี้ (เริ่มคุยหัวข้อใหม่)
 - `/help` : ดูคู่มือคำสั่งนี้อีกรอบ
@@ -64,6 +66,41 @@ def execute_command(
     elif cmd == "reset":
         memory_manager.clear_memory(chat_id)
         return f"🧹 เรียบร้อยคุณ {sender_name}! ล้างความจำบริบทแชทของห้องนี้ให้หมดแล้ว เริ่มคุยหัวข้อใหม่ได้เลย 555"
+
+    elif cmd == "mode":
+        target = args.strip().lower()
+        mode_descriptions = {
+            "chime_in": "ร่วมแจมคุยเป็นธรรมชาติ (ตอบเมื่อแท็ก + สุ่มแจมคุย/แซว/ตอบคำถามโดยไม่ต้องแท็ก)",
+            "mention": "ตอบเฉพาะเมื่อถูกแท็กหรือเรียกชื่อเท่านั้น",
+            "all": "ตอบทุกข้อความในกลุ่ม",
+        }
+        mode_aliases = {
+            "chime_in": "chime_in",
+            "แจม": "chime_in",
+            "คุย": "chime_in",
+            "ธรรมชาติ": "chime_in",
+            "auto": "chime_in",
+            "smart": "chime_in",
+            "mention": "mention",
+            "แท็ก": "mention",
+            "เรียก": "mention",
+            "all": "all",
+            "ทุกข้อความ": "all",
+            "ทั้งหมด": "all",
+        }
+        canonical = mode_aliases.get(target)
+        if canonical:
+            memory_manager.set_trigger_mode(chat_id, canonical)
+            return f"⚙️ ปรับโหมดการตอบของห้องนี้เป็น [{canonical}]:\n👉 {mode_descriptions[canonical]} เรียบร้อยแล้วเพื่อน!"
+        else:
+            current = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
+            return (
+                f"โหมดการตอบในกลุ่มที่มีให้เลือก:\n"
+                f"- `/mode chime_in` (หรือ `/mode แจม`) : ตอบเมื่อแท็ก + ร่วมแจมคุยบางทีอย่างเป็นธรรมชาติ (ค่าเริ่มต้น แนะนำ!)\n"
+                f"- `/mode mention` (หรือ `/mode แท็ก`) : ตอบเฉพาะเมื่อถูกแท็กหรือเรียกชื่อเท่านั้น\n"
+                f"- `/mode all` : ตอบทุกข้อความในกลุ่ม\n\n"
+                f"📌 โหมดปัจจุบันของห้องนี้: [{current}]"
+            )
 
     elif cmd == "persona":
         target = args.strip().lower()

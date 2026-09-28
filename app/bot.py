@@ -4,6 +4,8 @@ Handles text messages, image understanding, group trigger rules, and natural rep
 """
 import asyncio
 import logging
+import random
+import time
 from typing import Optional, Tuple, List
 
 from linebot.v3.messaging import (
@@ -37,6 +39,29 @@ line_config = Configuration(access_token=settings.line_channel_access_token)
 
 # Cached bot user ID to verify mentions
 _cached_bot_user_id: Optional[str] = None
+
+
+class TriggerResult(tuple):
+    """
+    Result of should_trigger_response: (should_reply: bool, is_spontaneous: bool).
+    Supports tuple unpacking:
+        should_reply, is_spontaneous = should_trigger_response(...)
+    and named property access:
+        result.should_reply, result.is_spontaneous
+    """
+    def __new__(cls, should_reply: bool, is_spontaneous: bool = False):
+        return super().__new__(cls, (bool(should_reply), bool(is_spontaneous)))
+
+    @property
+    def should_reply(self) -> bool:
+        return self[0]
+
+    @property
+    def is_spontaneous(self) -> bool:
+        return self[1]
+
+    def __bool__(self) -> bool:
+        return self[0]
 
 
 def get_api_client() -> ApiClient:
@@ -159,25 +184,28 @@ def should_trigger_response(
     bot_name: str,
     nicknames: list[str],
     trigger_mode: str,
-    bot_user_id: Optional[str] = None
-) -> bool:
+    bot_user_id: Optional[str] = None,
+    chat_id: Optional[str] = None
+) -> TriggerResult:
     """
     Determines if the bot should speak up in the conversation.
-    Avoids spamming group chats while remaining responsive and natural.
+    Returns TriggerResult(should_reply, is_spontaneous).
+    Direct calls (mentions, nicknames, quote replies, commands) always trigger with is_spontaneous=False.
+    Spontaneous chime-ins in groups trigger with is_spontaneous=True based on probability & cooldowns.
     """
     # 1. Always respond in 1-on-1 private chat
     if not is_group:
-        return True
+        return TriggerResult(True, False)
 
     clean_text = text.strip()
 
-    # 2. Always respond to slash commands (/plan, /boost, /goal, etc.)
+    # 2. Always respond to slash commands (/plan, /boost, /goal, /mode, etc.)
     if clean_text.startswith("/"):
-        return True
+        return TriggerResult(True, False)
 
     # 3. If mode is "all", respond to everything (not recommended for busy groups)
     if trigger_mode == "all":
-        return True
+        return TriggerResult(True, False)
 
     # 4. Check if user quoted/replied to a message
     if hasattr(event.message, "quoted_message_id") and event.message.quoted_message_id:
@@ -186,14 +214,14 @@ def should_trigger_response(
         # This prevents the bot from intruding when two group members quote-reply to each other.
         if memory_manager.has_bot_messages():
             if memory_manager.is_bot_message(quoted_id):
-                return True
+                return TriggerResult(True, False)
         else:
             # If no bot messages have been registered yet (e.g. test or startup),
             # check if the text addresses the bot or bot name is present
             lower_text = clean_text.lower()
             all_names = [bot_name.lower()] + [n.lower() for n in nicknames]
             if any(n in lower_text for n in all_names):
-                return True
+                return TriggerResult(True, False)
 
     # 5. Check if BOT was mentioned via LINE mentionees (do NOT trigger if Alice mentions Bob!)
     if hasattr(event.message, "mention") and event.message.mention:
@@ -203,18 +231,18 @@ def should_trigger_response(
             is_self = getattr(m, "is_self", False)
             uid = getattr(m, "user_id", None)
             if is_self:
-                return True
+                return TriggerResult(True, False)
             if bot_user_id and uid == bot_user_id:
-                return True
+                return TriggerResult(True, False)
             if m_type == "all":
-                return True
+                return TriggerResult(True, False)
 
     # 6. Check if text contains bot's name or any nickname
     lower_text = clean_text.lower()
     all_names = [bot_name.lower()] + [n.lower() for n in nicknames]
     for name in all_names:
         if name and name in lower_text:
-            return True
+            return TriggerResult(True, False)
 
     # 7. Smart trigger mode: check for direct questions or requests for help
     if trigger_mode == "smart":
@@ -224,9 +252,56 @@ def should_trigger_response(
             "แนะนำหน่อย", "ขอไอเดีย", "ใครรู้บ้าง"
         ]
         if any(kw in lower_text for kw in smart_keywords) or lower_text.endswith("?"):
-            return True
+            return TriggerResult(True, True)
 
-    return False
+    # 8. Natural Spontaneous Chime-in mode ("chime_in" or "auto")
+    if trigger_mode in ("chime_in", "auto"):
+        # Trivial message filter: ignore extremely short or acknowledgment-only texts
+        if len(clean_text) < 2 or clean_text.lower() in ("ok", "k", "เค", "คับ", "ครับ", "ค่ะ", ".", "!", "?", "55"):
+            return TriggerResult(False, False)
+
+        # Anti-spam guard: Check memory cooldown & minimum message gap
+        if chat_id:
+            mem = memory_manager.get_group_memory(chat_id)
+            now = time.time()
+            if mem.messages_since_bot_spoke < settings.spontaneous_min_messages:
+                return TriggerResult(False, False)
+            if mem.last_bot_reply_time > 0 and (now - mem.last_bot_reply_time) < settings.spontaneous_cooldown_seconds:
+                return TriggerResult(False, False)
+
+        # Calculate dynamic chime-in probability
+        prob = settings.spontaneous_base_rate
+
+        question_keywords = [
+            "มั้ย", "ไหม", "อะไร", "ใคร", "ที่ไหน", "ยังไง", "ทำไม",
+            "รึเปล่า", "ปะ", "ป่ะ", "ช่วยคิด", "แนะนำหน่อย", "ขอไอเดีย",
+            "ใครรู้บ้าง", "ดีไหม", "ดีมั้ย", "กินไร", "ทำไร", "ไปไหน", "เอาไง"
+        ]
+        if any(kw in lower_text for kw in question_keywords) or clean_text.endswith("?"):
+            prob += settings.spontaneous_question_bonus
+
+        slang_keywords = [
+            "555", "เหี้ย", "สัส", "โคตร", "วะ", "เว้ย", "งง", "สด๊าว",
+            "ชิบหาย", "กู", "มึง", "สุดจัด", "บ้า", "ตาย", "ฟิน", "จริงดิ"
+        ]
+        if any(kw in lower_text for kw in slang_keywords):
+            prob += settings.spontaneous_slang_bonus
+
+        prob = min(prob, 0.70)
+        roll = random.random()
+        if roll < prob:
+            logger.info(
+                "Spontaneous chime-in triggered for [%s] in chat [%s] (roll=%.2f < prob=%.2f)",
+                bot_name, chat_id, roll, prob
+            )
+            return TriggerResult(True, True)
+        else:
+            logger.debug(
+                "Spontaneous chime-in passed in chat [%s] (roll=%.2f >= prob=%.2f)",
+                chat_id, roll, prob
+            )
+
+    return TriggerResult(False, False)
 
 
 async def process_text_message(event: MessageEvent):
@@ -236,17 +311,19 @@ async def process_text_message(event: MessageEvent):
 
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
-        bot_user_id = await asyncio.to_thread(get_bot_user_id, api_client)
+        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
 
-        should_reply = should_trigger_response(
+        decision = should_trigger_response(
             text=text,
             event=event,
             is_group=is_group,
             bot_name=settings.bot_name,
             nicknames=settings.bot_nicknames,
-            trigger_mode=settings.group_trigger_mode,
-            bot_user_id=bot_user_id
+            trigger_mode=current_trigger_mode,
+            bot_user_id=bot_user_id,
+            chat_id=chat_id
         )
+        should_reply, is_spontaneous = decision.should_reply, decision.is_spontaneous
 
         # Record incoming message in memory buffer
         memory_manager.add_message(
@@ -291,9 +368,19 @@ async def process_text_message(event: MessageEvent):
             persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
             system_instruction = build_system_prompt(settings.bot_name, persona_key)
 
+            if is_spontaneous:
+                user_msg = (
+                    f"{text}\n\n"
+                    f"[หมายเหตุสำหรับ {settings.bot_name}: คุณไม่ได้ถูกแท็กโดยตรง แต่คุณได้ยินเพื่อนคุยกันในกลุ่ม "
+                    f"ให้ตอบแจมหรือแซวสั้นๆ คมๆ 1-2 ประโยค แบบเพื่อนสนิทที่นั่งฟังอยู่แล้วพูดแทรกขึ้นมาขำๆ "
+                    f"ห้ามแนะนำตัว ห้ามตอบยาว ห้ามเป็นทางการ]"
+                )
+            else:
+                user_msg = text
+
             reply_text = await asyncio.to_thread(
                 gemini_client.generate_chat_response,
-                user_message=text,
+                user_message=user_msg,
                 system_instruction=system_instruction,
                 history_context=history_context,
                 sender_name=sender_name
@@ -320,7 +407,7 @@ async def process_text_message(event: MessageEvent):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
                         memory_manager.register_bot_message_id(sm.id)
-            logger.info("Replied to [%s] in chat [%s]", sender_name, chat_id)
+            logger.info("Replied to [%s] in chat [%s] (spontaneous=%s)", sender_name, chat_id, is_spontaneous)
         except Exception as reply_err:
             logger.warning("reply_message failed (%s), attempting push_message fallback...", reply_err)
             if chat_id:
@@ -351,17 +438,32 @@ async def process_image_message(event: MessageEvent):
             logger.error("Failed to fetch image binary from LINE: %s", e)
             return
 
-        # In groups, we reply if user tags/replies or in 1-on-1
-        if is_group and settings.group_trigger_mode != "all":
-            memory_manager.add_message(
-                chat_id=chat_id,
-                sender_id=user_id or "unknown",
-                sender_name=sender_name,
-                text="[ส่งรูปภาพ]",
-                is_bot=False,
-                image_desc="รูปภาพที่ส่งเข้ามาในแชท"
+        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
+
+        # In groups, check if we should spontaneously react or skip
+        if is_group and current_trigger_mode != "all":
+            mem = memory_manager.get_group_memory(chat_id)
+            now = time.time()
+            can_spontaneously_react = (
+                current_trigger_mode in ("chime_in", "smart", "auto")
+                and mem.messages_since_bot_spoke >= settings.spontaneous_min_messages
+                and (mem.last_bot_reply_time == 0 or (now - mem.last_bot_reply_time) >= settings.spontaneous_cooldown_seconds)
+                and random.random() < settings.spontaneous_image_rate
             )
-            return
+
+            if not can_spontaneously_react:
+                memory_manager.add_message(
+                    chat_id=chat_id,
+                    sender_id=user_id or "unknown",
+                    sender_name=sender_name,
+                    text="[ส่งรูปภาพ]",
+                    is_bot=False,
+                    image_desc="รูปภาพที่ส่งเข้ามาในแชท"
+                )
+                logger.info("Group image saved to history buffer without reply: [%s]", sender_name)
+                return
+            else:
+                logger.info("Spontaneous image comment triggered in chat [%s]!", chat_id)
 
         # Show loading animation (1-on-1 only)
         if settings.enable_loading_animation and not is_group and user_id:
@@ -375,7 +477,7 @@ async def process_image_message(event: MessageEvent):
         system_instruction = build_system_prompt(settings.bot_name, persona_key)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
 
-        user_prompt = "เพื่อนส่งรูปนี้มาในห้องไลน์ ช่วยดูรูปแล้วคอมเมนต์ แซว หรือพูดคุยสั้นๆ สไตล์เพื่อนสนิทในกลุ่มที่เป็นคนจริงๆ เป็นธรรมชาติ"
+        user_prompt = "เพื่อนส่งรูปนี้มาในห้องไลน์ ช่วยดูรูปแล้วคอมเมนต์ แซว หรือพูดคุยสั้นๆ 1-2 ประโยค สไตล์เพื่อนสนิทในกลุ่มที่เป็นคนจริงๆ เป็นธรรมชาติ"
 
         reply_text = await asyncio.to_thread(
             gemini_client.generate_chat_response,

@@ -23,6 +23,9 @@ class GroupMemory:
         self.max_history = max_history
         self.messages: List[ChatMessage] = []
         self.persona: Optional[str] = None  # Room-specific override if set
+        self.trigger_mode: Optional[str] = None  # Room-specific trigger mode override (/mode)
+        self.last_bot_reply_time: float = 0.0
+        self.messages_since_bot_spoke: int = 0
 
     def add_message(
         self,
@@ -40,6 +43,12 @@ class GroupMemory:
             image_desc=image_desc
         )
         self.messages.append(msg)
+        if is_bot:
+            self.messages_since_bot_spoke = 0
+            self.last_bot_reply_time = time.time()
+        else:
+            self.messages_since_bot_spoke += 1
+
         if len(self.messages) > self.max_history:
             self.messages = self.messages[-self.max_history:]
 
@@ -123,6 +132,14 @@ class MemoryManager:
     def get_persona(self, chat_id: str, default_persona: str) -> str:
         mem = self.get_group_memory(chat_id)
         return mem.persona or default_persona
+
+    def set_trigger_mode(self, chat_id: str, mode: str):
+        mem = self.get_group_memory(chat_id)
+        mem.trigger_mode = mode
+
+    def get_trigger_mode(self, chat_id: str, default_mode: str) -> str:
+        mem = self.get_group_memory(chat_id)
+        return mem.trigger_mode or default_mode
 
     def get_cached_name(self, user_id: str) -> Optional[str]:
         if user_id in self.profile_cache:

@@ -134,7 +134,7 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is True
+    ).should_reply is True
 
     # 2. Slash command in group always triggers
     assert should_trigger_response(
@@ -144,7 +144,7 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is True
+    ).should_reply is True
 
     # 3. Mentioning bot name or nickname in group triggers
     assert should_trigger_response(
@@ -154,7 +154,7 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is True
+    ).should_reply is True
 
     assert should_trigger_response(
         text="ถาม บอท หน่อย",
@@ -163,9 +163,9 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is True
+    ).should_reply is True
 
-    # 4. Normal chatter without bot name should NOT trigger
+    # 4. Normal chatter without bot name should NOT trigger in mention mode
     assert should_trigger_response(
         text="วันนี้กินข้าวที่ไหนกันดีพวกเรา",
         event=mock_event,
@@ -173,7 +173,7 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is False
+    ).should_reply is False
 
     # 5. Smart trigger mode with question keyword
     assert should_trigger_response(
@@ -183,7 +183,7 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="smart"
-    ) is True
+    ).should_reply is True
 
     # 6. Mention of ANOTHER user in group should NOT trigger the bot
     mock_other_mention = MagicMock()
@@ -204,7 +204,7 @@ def test_should_trigger_response():
         nicknames=nicknames,
         trigger_mode="mention",
         bot_user_id="bot_user_real"
-    ) is False
+    ).should_reply is False
 
     # 7. Mention of the bot specifically DOES trigger
     mock_bot_mention = MagicMock()
@@ -224,7 +224,7 @@ def test_should_trigger_response():
         nicknames=nicknames,
         trigger_mode="mention",
         bot_user_id="bot_user_real"
-    ) is True
+    ).should_reply is True
 
     # 8. Quoting bot's message in group triggers
     memory_manager.register_bot_message_id("bot_msg_sample_1")
@@ -239,7 +239,7 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is True
+    ).should_reply is True
 
     # 9. Quoting another member's message in group does NOT trigger
     mock_member_quote_event = MagicMock()
@@ -253,7 +253,39 @@ def test_should_trigger_response():
         bot_name=bot_name,
         nicknames=nicknames,
         trigger_mode="mention"
-    ) is False
+    ).should_reply is False
+
+
+def test_should_trigger_spontaneous_chime_in():
+    mock_event = MagicMock()
+    mock_event.message = MagicMock()
+    mock_event.message.quoted_message_id = None
+    mock_event.message.mention = None
+
+    bot_name = "Thomas"
+    nicknames = ["thomas", "โทมัส"]
+
+    # Short trivial noise is ignored in chime_in mode
+    assert should_trigger_response(
+        text="ok",
+        event=mock_event,
+        is_group=True,
+        bot_name=bot_name,
+        nicknames=nicknames,
+        trigger_mode="chime_in"
+    ).should_reply is False
+
+    # Direct mention in chime_in mode always triggers with is_spontaneous=False
+    res_direct = should_trigger_response(
+        text="โทมัส วันนี้ว่างไหม",
+        event=mock_event,
+        is_group=True,
+        bot_name=bot_name,
+        nicknames=nicknames,
+        trigger_mode="chime_in"
+    )
+    assert res_direct.should_reply is True
+    assert res_direct.is_spontaneous is False
 
 
 def test_execute_command_static():

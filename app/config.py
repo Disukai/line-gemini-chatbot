@@ -36,11 +36,11 @@ class Settings(BaseSettings):
 
     # Bot Identity & Persona
     bot_name: str = Field(
-        default="จิมมี่",
+        default="Thomas",
         description="Bot's primary name in the group chat"
     )
     bot_nicknames_str: str = Field(
-        default="บอท,จิมมี่,เจมี่,gemini,ai,เพื่อน",
+        default="thomas,โทมัส,โธมัส,ทอม,ทอมมี่,บอท,ai,เพื่อน,จิมมี่",
         description="Comma-separated aliases or nicknames for the bot"
     )
     default_persona: str = Field(
@@ -49,12 +49,37 @@ class Settings(BaseSettings):
     )
 
     # Group Chat Behavior
-    # Options: "mention" (reply only when tagged/named/replied to/command),
+    # Options: "chime_in" (mention + natural spontaneous chime-ins),
+    #          "mention" (reply only when tagged/named/replied to/command),
     #          "smart" (mention + intelligent chime-in on group questions),
     #          "all" (reply to every message in group - not recommended)
     group_trigger_mode: str = Field(
-        default="mention",
-        description="Trigger behavior in group chats: mention, smart, or all"
+        default="chime_in",
+        description="Trigger behavior in group chats: chime_in, mention, smart, or all"
+    )
+    spontaneous_base_rate: float = Field(
+        default=0.25,
+        description="Base probability (0.0 to 1.0) for spontaneous chime-in in group chats"
+    )
+    spontaneous_question_bonus: float = Field(
+        default=0.20,
+        description="Bonus probability added when message contains questions or requests for opinion"
+    )
+    spontaneous_slang_bonus: float = Field(
+        default=0.15,
+        description="Bonus probability added when message contains slang, laughter, or strong emotion"
+    )
+    spontaneous_image_rate: float = Field(
+        default=0.30,
+        description="Probability for spontaneous reaction when a photo is posted in group chat"
+    )
+    spontaneous_cooldown_seconds: int = Field(
+        default=25,
+        description="Minimum seconds between spontaneous chime-ins in a group"
+    )
+    spontaneous_min_messages: int = Field(
+        default=2,
+        description="Minimum non-bot messages required before another spontaneous chime-in"
     )
     max_history_per_group: int = Field(
         default=25,
