@@ -13,6 +13,7 @@ from linebot.v3.webhooks import (
     MessageEvent,
     TextMessageContent,
     ImageMessageContent,
+    FileMessageContent,
     JoinEvent,
     FollowEvent,
 )
@@ -21,6 +22,7 @@ from app.config import settings
 from app.bot import (
     process_text_message,
     process_image_message,
+    process_file_message,
     process_join_event,
     process_follow_event,
 )
@@ -127,6 +129,8 @@ async def callback(
                 background_tasks.add_task(process_text_message, event)
             elif isinstance(event.message, ImageMessageContent):
                 background_tasks.add_task(process_image_message, event)
+            elif isinstance(event.message, FileMessageContent):
+                background_tasks.add_task(process_file_message, event)
         elif isinstance(event, JoinEvent):
             background_tasks.add_task(process_join_event, event)
         elif isinstance(event, FollowEvent):

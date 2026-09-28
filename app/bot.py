@@ -22,6 +22,7 @@ from linebot.v3.webhooks import (
     MessageEvent,
     TextMessageContent,
     ImageMessageContent,
+    FileMessageContent,
     JoinEvent,
     FollowEvent,
 )
@@ -32,6 +33,12 @@ from app.persona import build_system_prompt
 from app.commands import parse_command, execute_command
 from app.gemini_client import gemini_client
 from app.chat_tracker import chat_tracker
+from app.file_utils import (
+    get_file_category,
+    decode_text_file,
+    extract_text_from_docx,
+    extract_text_from_xlsx,
+)
 
 logger = logging.getLogger("line_gemini_bot")
 
@@ -311,6 +318,9 @@ async def process_text_message(event: MessageEvent):
     chat_id, user_id, is_group = extract_chat_and_user_ids(event)
     chat_tracker.register_chat(chat_id, "group" if is_group else "user")
 
+    message_id = getattr(event.message, "id", None)
+    quoted_id = getattr(event.message, "quoted_message_id", None)
+
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
         current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
@@ -327,13 +337,15 @@ async def process_text_message(event: MessageEvent):
         )
         should_reply, is_spontaneous = decision.should_reply, decision.is_spontaneous
 
-        # Record incoming message in memory buffer
+        # Record incoming message in memory buffer with message_id and quoted_message_id
         memory_manager.add_message(
             chat_id=chat_id,
             sender_id=user_id or "unknown",
             sender_name=sender_name,
             text=text,
-            is_bot=False
+            is_bot=False,
+            message_id=message_id,
+            quoted_message_id=quoted_id
         )
 
         if not should_reply:
@@ -352,12 +364,40 @@ async def process_text_message(event: MessageEvent):
                     logger.debug("Loading animation request ignored: %s", e)
             asyncio.create_task(asyncio.to_thread(_trigger_animation))
 
+        # Look up replied/quoted message details if user quoted someone
+        quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
+        quoted_context_block = ""
+        if quoted_msg:
+            q_author = f"{settings.bot_name} (ตัวคุณเอง)" if quoted_msg.is_bot else quoted_msg.sender_name
+            extras = []
+            if quoted_msg.image_desc:
+                extras.append(f"รูปภาพ: {quoted_msg.image_desc}")
+            if quoted_msg.file_desc:
+                extras.append(f"ไฟล์แนบ: {quoted_msg.file_desc}")
+            extra_info = f" [{', '.join(extras)}]" if extras else ""
+
+            quoted_context_block = (
+                f"[บริบทสำคัญ: {sender_name} กำลังกดรีพลาย (Quote Reply) ตอบกลับข้อความเดิมของ '{q_author}']\n"
+                f"- ข้อความเดิมที่ถูกรีพลาย: \"{quoted_msg.text}\"{extra_info}\n"
+                f"- ข้อความใหม่ที่ {sender_name} พิมพ์ตอบกลับมา: \"{text}\"\n"
+                f"คำแนะนำสำหรับ {settings.bot_name}: ให้ตอบโดยเชื่อมโยงกับข้อความเดิมที่ {sender_name} ตอบกลับมาอย่างเป็นธรรมชาติ "
+                f"เหมือนเพื่อนที่จำได้ว่ากำลังคุยเรื่องอะไรกันอยู่ ไม่ต้องพูดซ้ำประโยคเดิมหมด แค่คุยต่อให้ลื่นไหล\n\n"
+            )
+        elif quoted_id:
+            quoted_context_block = (
+                f"[บริบท: {sender_name} กำลังกดรีพลาย (Quote Reply) ตอบกลับข้อความเดิมในแชท แต่ข้อความนั้นเก่าเกินกว่าประวัติในความจำ]\n"
+                f"- ข้อความที่ {sender_name} พิมพ์: \"{text}\"\n\n"
+            )
+
         # Check for slash commands
         parsed_cmd = parse_command(text)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
 
         if parsed_cmd:
             cmd, args = parsed_cmd
+            # If user ran a command like /plan or /boost without args but quoted a message, use the quoted message text!
+            if not args.strip() and quoted_msg and quoted_msg.text:
+                args = quoted_msg.text
             reply_text = await asyncio.to_thread(
                 execute_command,
                 cmd=cmd,
@@ -372,14 +412,14 @@ async def process_text_message(event: MessageEvent):
 
             if is_spontaneous:
                 user_msg = (
-                    f"{text}\n\n"
+                    f"{quoted_context_block}{text}\n\n"
                     f"[บรีฟสำหรับ {settings.bot_name}: เพื่อนกำลังคุยกันในกลุ่ม ให้ตอบแจมหรือแซวสั้นๆ 1-2 ประโยค "
                     f"ฟีลเพื่อน Gen Z / Gen Alpha ในกลุ่มนั่งฟังอยู่แล้วสวนกลับมาแบบกวนๆ หรือช็อตฟีลขำๆ "
                     f"ใช้ภาษาแชทวัยรุ่นไทยสมัยนี้ (นอย, อ่อม, ทำถึง, ฉ่ำ, ช็อตฟีล, เกิ๊น, ตัวแม่, ของแทร่, 5555555) "
                     f"ห้ามใช้สำนวนแปลหนังฝรั่งหรือนิยายเด็ดขาด ห้ามแนะนำตัว]"
                 )
             else:
-                user_msg = text
+                user_msg = f"{quoted_context_block}{text}"
 
             reply_text = await asyncio.to_thread(
                 gemini_client.generate_chat_response,
@@ -409,7 +449,7 @@ async def process_text_message(event: MessageEvent):
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
-                        memory_manager.register_bot_message_id(sm.id)
+                        memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
             logger.info("Replied to [%s] in chat [%s] (spontaneous=%s)", sender_name, chat_id, is_spontaneous)
         except Exception as reply_err:
             logger.warning("reply_message failed (%s), attempting push_message fallback...", reply_err)
@@ -420,16 +460,23 @@ async def process_text_message(event: MessageEvent):
                     if push_res and hasattr(push_res, "sent_messages"):
                         for sm in push_res.sent_messages:
                             if hasattr(sm, "id") and sm.id:
-                                memory_manager.register_bot_message_id(sm.id)
+                                memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
                     logger.info("Push fallback delivered successfully to [%s]", chat_id)
                 except Exception as push_err:
                     logger.error("push_message fallback also failed: %s", push_err)
 
 
 async def process_image_message(event: MessageEvent):
-    """Handles an incoming image message event."""
+    """
+    Handles an incoming image message event.
+    Performs OCR, document/receipt analysis, homework/code solving, or witty Gen Z photo commentary.
+    Supports quote-reply context if sent in response to another message.
+    """
     chat_id, user_id, is_group = extract_chat_and_user_ids(event)
     chat_tracker.register_chat(chat_id, "group" if is_group else "user")
+
+    image_id = getattr(event.message, "id", None)
+    quoted_id = getattr(event.message, "quoted_message_id", None)
 
     with get_api_client() as api_client:
         sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
@@ -444,6 +491,15 @@ async def process_image_message(event: MessageEvent):
 
         current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.group_trigger_mode)
 
+        # Look up replied message if this image was sent as a quote reply
+        quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
+        quoted_image_context = ""
+        if quoted_msg:
+            q_author = f"{settings.bot_name} (ตัวคุณเอง)" if quoted_msg.is_bot else quoted_msg.sender_name
+            quoted_image_context = (
+                f"\n[บริบทเพิ่มเติม: ผู้ใช้ส่งรูปภาพนี้มาเพื่อตอบกลับ (Quote Reply) ข้อความของ '{q_author}': \"{quoted_msg.text}\"]\n"
+            )
+
         # In groups, check if we should spontaneously react or skip
         if is_group and current_trigger_mode != "all":
             mem = memory_manager.get_group_memory(chat_id)
@@ -455,6 +511,10 @@ async def process_image_message(event: MessageEvent):
                 and random.random() < settings.spontaneous_image_rate
             )
 
+            # If user quoted bot's message directly, always react
+            if quoted_id and memory_manager.is_bot_message(quoted_id):
+                can_spontaneously_react = True
+
             if not can_spontaneously_react:
                 memory_manager.add_message(
                     chat_id=chat_id,
@@ -462,6 +522,8 @@ async def process_image_message(event: MessageEvent):
                     sender_name=sender_name,
                     text="[ส่งรูปภาพ]",
                     is_bot=False,
+                    message_id=image_id,
+                    quoted_message_id=quoted_id,
                     image_desc="รูปภาพที่ส่งเข้ามาในแชท"
                 )
                 logger.info("Group image saved to history buffer without reply: [%s]", sender_name)
@@ -481,7 +543,13 @@ async def process_image_message(event: MessageEvent):
         system_instruction = build_system_prompt(settings.bot_name, persona_key)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
 
-        user_prompt = "เพื่อนส่งรูปนี้มาในห้องไลน์ ช่วยดูรูปแล้วคอมเมนต์ แซว หรือเม้าท์สั้นๆ 1-2 ประโยค ฟีลเพื่อน Gen Z ในกลุ่มไลน์แซวกัน (เช่น โฮ่งมาก, ติดแกลม, สภาพพพ, ทำถึงเกิ๊น) ห้ามพูดทางการ ห้ามสำนวนนิยาย"
+        user_prompt = (
+            f"เพื่อนส่งรูปภาพนี้มาในแชท {quoted_image_context}ช่วยดูและอ่านรายละเอียดในรูปภาพอย่างละเอียด:\n"
+            "1. OCR & อ่านข้อความ: ถ้าในรูปมีตัวหนังสือ ป้าย ข้อความ สลิป ใบเสร็จ เอกสาร การบ้าน เมนูอาหาร สกรีนช็อตโค้ด หรือหน้าจอแชท ให้อ่านข้อความทั้งหมดและช่วยแปล/ตอบ/วิเคราะห์/สรุป/ช่วยคิดเงินให้เพื่อนทันที\n"
+            "2. ถ้าเป็นคำถามหรือการบ้าน: ช่วยตอบและอธิบายเฉลยให้ถูกต้อง ชัดเจน\n"
+            "3. ถ้าเป็นรูปทั่วไป/มีม/สถานที่/ของกิน/รูปคน: สังเกตดีเทลในรูปแล้วคุย แซว หรือเม้าท์แบบเพื่อนซี้ Gen Z รู้จริง ไม่พูดลอยๆ (ช็อตฟีล, ป้ายยา, แซวดีเทลในรูป)\n"
+            "4. โทนการพูด: เพื่อนสนิท Gen Z / Gen Alpha สมัยนี้ (ทำถึง, โฮ่งมาก, นอย, ฉ่ำ, ติดแกลม, สภาพพพ, 5555555) ห้ามสำนวนแปลนิยาย/หนังฝรั่งเด็ดขาด ห้ามทักทายแบบทางการ"
+        )
 
         reply_text = await asyncio.to_thread(
             gemini_client.generate_chat_response,
@@ -493,6 +561,17 @@ async def process_image_message(event: MessageEvent):
             mime_type="image/jpeg"
         )
 
+        # Save incoming image action and bot reply into memory buffer
+        memory_manager.add_message(
+            chat_id=chat_id,
+            sender_id=user_id or "unknown",
+            sender_name=sender_name,
+            text="[ส่งรูปภาพ]",
+            is_bot=False,
+            message_id=image_id,
+            quoted_message_id=quoted_id,
+            image_desc="รูปภาพ/เอกสาร/สลิปที่ส่งเข้ามาในแชท"
+        )
         memory_manager.add_message(
             chat_id=chat_id,
             sender_id="bot",
@@ -511,7 +590,7 @@ async def process_image_message(event: MessageEvent):
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
-                        memory_manager.register_bot_message_id(sm.id)
+                        memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
             logger.info("Replied to image from [%s] in chat [%s]", sender_name, chat_id)
         except Exception as reply_err:
             logger.warning("reply_message for image failed (%s), attempting push fallback...", reply_err)
@@ -519,6 +598,223 @@ async def process_image_message(event: MessageEvent):
                 try:
                     push_req = PushMessageRequest(to=chat_id, messages=text_messages)
                     messaging_api.push_message(push_req)
+                except Exception as push_err:
+                    logger.error("push_message fallback failed: %s", push_err)
+
+
+async def process_file_message(event: MessageEvent):
+    """
+    Handles incoming document/file uploads (PDF, Word docx, Excel xlsx, CSV, TXT, Code, Audio, etc.).
+    Extracts text or attaches native media parts for deep analysis by Gemini.
+    Supports quote-reply context if uploaded in response to another message.
+    """
+    chat_id, user_id, is_group = extract_chat_and_user_ids(event)
+    chat_tracker.register_chat(chat_id, "group" if is_group else "user")
+
+    file_name = getattr(event.message, "file_name", "document")
+    file_size = getattr(event.message, "file_size", 0)
+    file_id = event.message.id
+    quoted_id = getattr(event.message, "quoted_message_id", None)
+
+    with get_api_client() as api_client:
+        sender_name = await asyncio.to_thread(resolve_sender_name, api_client, chat_id, user_id, is_group)
+        blob_api = MessagingApiBlob(api_client)
+        messaging_api = MessagingApi(api_client)
+
+        try:
+            file_bytes = await asyncio.to_thread(blob_api.get_message_content, file_id)
+        except Exception as e:
+            logger.error("Failed to fetch file binary from LINE: %s", e)
+            return
+
+        # Show loading animation in 1-on-1 chat
+        if settings.enable_loading_animation and not is_group and user_id:
+            try:
+                anim_req = ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=20)
+                messaging_api.show_loading_animation(anim_req)
+            except Exception as e:
+                logger.debug("Loading animation request ignored: %s", e)
+
+        category, mime_type = get_file_category(file_name)
+        logger.info(
+            "Processing file [%s] (size=%d bytes, category=%s, mime=%s) from [%s] in [%s]",
+            file_name, file_size, category, mime_type, sender_name, chat_id
+        )
+
+        # Look up replied message if this file was sent as a quote reply
+        quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
+        quoted_file_context = ""
+        if quoted_msg:
+            q_author = f"{settings.bot_name} (ตัวคุณเอง)" if quoted_msg.is_bot else quoted_msg.sender_name
+            quoted_file_context = (
+                f"\n[บริบทเพิ่มเติม: ผู้ใช้ส่งไฟล์นี้มาเพื่อตอบกลับ (Quote Reply) ข้อความของ '{q_author}': \"{quoted_msg.text}\"]\n"
+            )
+
+        persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
+        system_instruction = build_system_prompt(settings.bot_name, persona_key)
+        history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
+
+        reply_text = ""
+
+        if category == "pdf":
+            user_prompt = (
+                f"เพื่อนชื่อ '{sender_name}' ส่งไฟล์ PDF ชื่อ '{file_name}' มาในแชท {quoted_file_context}\n"
+                f"ช่วยอ่านเนื้อหาในไฟล์นี้ทั้งหมดอย่างละเอียด แล้วสรุปใจความสำคัญ ประเด็นหลัก หรือสิ่งที่น่าสนใจให้ฟัง\n"
+                f"- ถ้ามี Action Items, ข้อตกลง, หรือตัวเลขสำคัญให้ดึงมาบอก\n"
+                f"- ตอบด้วยภาษาเพื่อนสนิท Gen Z / Gen Alpha (สรุปให้ฉ่ำๆ, ทำถึง, เข้าใจง่าย, มี bullet points อ่านสบายตา)\n"
+                f"- ห้ามภาษาทางการแข็งทื่อ ห้ามสำนวนนิยาย"
+            )
+            reply_text = await asyncio.to_thread(
+                gemini_client.generate_chat_response,
+                user_message=user_prompt,
+                system_instruction=system_instruction,
+                history_context=history_context,
+                sender_name=sender_name,
+                media_bytes=file_bytes,
+                media_mime_type="application/pdf"
+            )
+
+        elif category == "docx":
+            text_content = extract_text_from_docx(file_bytes)
+            if not text_content.strip():
+                reply_text = f"แกรรร เราลองเปิดอ่านไฟล์ Word '{file_name}' แล้วแต่ดูเหมือนไฟล์จะว่างเปล่าหรือเป็นรูปล้วนๆ เลยอ่านข้อความข้างในไม่เจออะ 5555555"
+            else:
+                user_prompt = (
+                    f"เพื่อนชื่อ '{sender_name}' ส่งไฟล์ Word (.docx) ชื่อ '{file_name}' มาในแชท {quoted_file_context}\n"
+                    f"เนื้อหาในเอกสาร:\n"
+                    f"\"\"\"\n{text_content[:40000]}\n\"\"\"\n\n"
+                    f"ช่วยอ่านเนื้อหาในเอกสารนี้ แล้วสรุปประเด็นสำคัญ สาระสำคัญ หรืออธิบายสิ่งที่อยู่ในไฟล์ให้เพื่อนฟังแบบเข้าใจง่ายๆ\n"
+                    f"สไตล์เพื่อน Gen Z (สรุปแบบทำถึง, สรุปให้ฉ่ำ, อ่านง่าย) ห้ามใช้ภาษาทางการแข็งทื่อ"
+                )
+                reply_text = await asyncio.to_thread(
+                    gemini_client.generate_chat_response,
+                    user_message=user_prompt,
+                    system_instruction=system_instruction,
+                    history_context=history_context,
+                    sender_name=sender_name
+                )
+
+        elif category == "xlsx":
+            sheet_content = extract_text_from_xlsx(file_bytes)
+            if not sheet_content.strip():
+                reply_text = f"แกรรร ไฟล์ Excel '{file_name}' นี้ดูเหมือนไม่มีข้อมูลตัวอักษรหรือตารางที่เราอ่านได้เลย ลองเซฟเป็น CSV หรือส่งเป็นรูปตารางมาดูมั้ยย 5555555"
+            else:
+                user_prompt = (
+                    f"เพื่อนชื่อ '{sender_name}' ส่งไฟล์ตาราง Excel (.xlsx) ชื่อ '{file_name}' มาในแชท {quoted_file_context}\n"
+                    f"ข้อมูลตารางในไฟล์:\n"
+                    f"\"\"\"\n{sheet_content[:40000]}\n\"\"\"\n\n"
+                    f"ช่วยวิเคราะห์และสรุปข้อมูลในตารางนี้ให้เพื่อนฟัง ดึง insight สำคัญ ยอดรวม หรือประเด็นเด่นๆ ออกมาสรุปให้ชัดเจน\n"
+                    f"สไตล์เพื่อน Gen Z ฉลาดๆ สรุปแบบทำถึง อ่านง่าย ห้ามตอบทางการน่าเบื่อ"
+                )
+                reply_text = await asyncio.to_thread(
+                    gemini_client.generate_chat_response,
+                    user_message=user_prompt,
+                    system_instruction=system_instruction,
+                    history_context=history_context,
+                    sender_name=sender_name
+                )
+
+        elif category == "text":
+            text_content = decode_text_file(file_bytes)
+            user_prompt = (
+                f"เพื่อนชื่อ '{sender_name}' ส่งไฟล์ '{file_name}' มาในแชท {quoted_file_context}\n"
+                f"เนื้อหาในไฟล์:\n"
+                f"\"\"\"\n{text_content[:40000]}\n\"\"\"\n\n"
+                f"ช่วยอ่านโค้ด/ข้อมูล/ข้อความในไฟล์นี้ แล้วสรุป อธิบาย หรือวิเคราะห์ให้เพื่อนฟัง\n"
+                f"- ถ้าเป็นโค้ด: อธิบายการทำงาน และแนะนำจุดเด่นหรือจุดปรับปรุง/บั๊กถ้ามี\n"
+                f"- ถ้าเป็นข้อมูล/CSV/JSON: สรุปข้อมูลสำคัญและ insight ที่น่าสนใจ\n"
+                f"- ถ้าเป็นบทความ/บันทึก: สรุปใจความสำคัญ\n"
+                f"ตอบด้วยภาษาเพื่อนสนิท Gen Z ที่ฉลาดและเข้าใจง่าย ห้ามทางการ ห้ามสำนวนนิยาย"
+            )
+            reply_text = await asyncio.to_thread(
+                gemini_client.generate_chat_response,
+                user_message=user_prompt,
+                system_instruction=system_instruction,
+                history_context=history_context,
+                sender_name=sender_name
+            )
+
+        elif category == "image":
+            user_prompt = (
+                f"เพื่อนส่งไฟล์รูปภาพชื่อ '{file_name}' มาในแชท {quoted_file_context}ช่วยอ่านและดูรายละเอียดในรูปอย่างละเอียด:\n"
+                f"1. OCR & อ่านข้อความทั้งหมดในรูป (ถ้าเป็นบิล/สลิป/เอกสาร/การบ้าน/โค้ด)\n"
+                f"2. สรุป ตอบคำถาม หรือวิเคราะห์สิ่งที่เห็น\n"
+                f"3. ตอบสไตล์เพื่อนซี้ Gen Z รู้จริง ทำถึง ห้ามสำนวนนิยาย"
+            )
+            reply_text = await asyncio.to_thread(
+                gemini_client.generate_chat_response,
+                user_message=user_prompt,
+                system_instruction=system_instruction,
+                history_context=history_context,
+                sender_name=sender_name,
+                media_bytes=file_bytes,
+                media_mime_type=mime_type
+            )
+
+        elif category == "audio":
+            user_prompt = (
+                f"เพื่อนส่งไฟล์เสียงชื่อ '{file_name}' มาในแชท {quoted_file_context}ช่วยฟังเนื้อหาในคลิปเสียงนี้อย่างละเอียด "
+                f"แล้วถอดความหรือสรุปใจความสำคัญให้เพื่อนฟัง ตอบด้วยสไตล์เพื่อน Gen Z สรุปกระชับเข้าใจง่าย"
+            )
+            reply_text = await asyncio.to_thread(
+                gemini_client.generate_chat_response,
+                user_message=user_prompt,
+                system_instruction=system_instruction,
+                history_context=history_context,
+                sender_name=sender_name,
+                media_bytes=file_bytes,
+                media_mime_type=mime_type
+            )
+
+        else:
+            size_kb = max(1, file_size // 1024)
+            reply_text = (
+                f"แกรรร ไฟล์ '{file_name}' ({size_kb} KB) อันนี้เรายังแกะเนื้อหาข้างในไม่ได้อะ 5555555\n"
+                f"ตอนนี้เรารองรับอ่านไฟล์ PDF, Word (.docx), Excel (.xlsx), CSV, Text/Code (.txt, .json, .py, .md ฯลฯ), รูปภาพ และไฟล์เสียง นะแกกก "
+                f"ลองแปลงไฟล์หรือแคปรูปส่งมาให้เราดูใหม่อีกทีนะะะ!"
+            )
+
+        # Record file message and bot reply in conversation history
+        memory_manager.add_message(
+            chat_id=chat_id,
+            sender_id=user_id or "unknown",
+            sender_name=sender_name,
+            text=f"[ส่งไฟล์: {file_name}]",
+            is_bot=False,
+            message_id=file_id,
+            quoted_message_id=quoted_id,
+            file_desc=f"{file_name} ({file_size} bytes)"
+        )
+        memory_manager.add_message(
+            chat_id=chat_id,
+            sender_id="bot",
+            sender_name=settings.bot_name,
+            text=reply_text,
+            is_bot=True
+        )
+
+        text_messages = [TextMessage(text=c) for c in chunk_line_text(reply_text)]
+        try:
+            reply_request = ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=text_messages
+            )
+            reply_res = messaging_api.reply_message(reply_request)
+            if reply_res and hasattr(reply_res, "sent_messages"):
+                for sm in reply_res.sent_messages:
+                    if hasattr(sm, "id") and sm.id:
+                        memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
+            logger.info("Replied to file [%s] from [%s] in chat [%s]", file_name, sender_name, chat_id)
+        except Exception as reply_err:
+            logger.warning("reply_message for file failed (%s), attempting push fallback...", reply_err)
+            if chat_id:
+                try:
+                    push_req = PushMessageRequest(to=chat_id, messages=text_messages)
+                    push_res = messaging_api.push_message(push_req)
+                    if push_res and hasattr(push_res, "sent_messages"):
+                        for sm in push_res.sent_messages:
+                            if hasattr(sm, "id") and sm.id:
+                                memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
                 except Exception as push_err:
                     logger.error("push_message fallback failed: %s", push_err)
 

@@ -401,3 +401,167 @@ def test_webhook_join_event():
     )
     assert res.status_code == 200
     assert res.json() == {"status": "ok"}
+
+
+def test_file_utils_category_and_decode():
+    from app.file_utils import get_file_category, decode_text_file
+
+    assert get_file_category("document.pdf") == ("pdf", "application/pdf")
+    assert get_file_category("contract.docx") == ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    assert get_file_category("data.xlsx") == ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert get_file_category("sales.csv") == ("text", "text/csv")
+    assert get_file_category("config.json") == ("text", "application/json")
+    assert get_file_category("script.py") == ("text", "text/plain")
+    assert get_file_category("photo.png") == ("image", "image/png")
+    assert get_file_category("voice.mp3") == ("audio", "audio/mp3")
+    assert get_file_category("program.exe") == ("unsupported", "application/octet-stream")
+
+    # Decoding tests
+    utf8_bytes = "สวัสดีครับ ทดสอบภาษาไทย".encode("utf-8")
+    assert "สวัสดีครับ" in decode_text_file(utf8_bytes)
+
+    tis620_bytes = "ภาษาไทย Windows".encode("tis-620")
+    assert "ภาษาไทย" in decode_text_file(tis620_bytes)
+
+
+def test_file_utils_docx_extraction():
+    import io
+    import zipfile
+    from app.file_utils import extract_text_from_docx
+
+    # Build a minimal valid docx in-memory zip
+    xml_content = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:body>'
+        '<w:p><w:r><w:t>หัวข้อที่หนึ่ง</w:t></w:r></w:p>'
+        '<w:p><w:r><w:t>เนื้อหาเอกสารสำคัญ</w:t></w:r></w:p>'
+        '</w:body>'
+        '</w:document>'
+    )
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, "w") as zf:
+        zf.writestr("word/document.xml", xml_content)
+    docx_bytes = bio.getvalue()
+
+    extracted = extract_text_from_docx(docx_bytes)
+    assert "หัวข้อที่หนึ่ง" in extracted
+    assert "เนื้อหาเอกสารสำคัญ" in extracted
+
+
+def test_webhook_file_event():
+    client = TestClient(app)
+    secret = "valid_secret_test_123"
+    settings.line_channel_secret = secret
+
+    payload = json.dumps({
+        "destination": "Ubot123",
+        "events": [
+            {
+                "type": "message",
+                "message": {
+                    "type": "file",
+                    "id": "file_msg_999",
+                    "fileName": "meeting_notes.pdf",
+                    "fileSize": 45678
+                },
+                "webhookEventId": "01FZ74A0TDDPYRVKNK77XKC3ZR",
+                "deliveryContext": {
+                    "isRedelivery": False
+                },
+                "timestamp": 1720000000000,
+                "source": {"type": "group", "groupId": "Ctestgroup"},
+                "replyToken": "test_reply_token_file",
+                "mode": "active"
+            }
+        ]
+    })
+
+    hash_val = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    signature = base64.b64encode(hash_val).decode("utf-8")
+
+    res = client.post(
+        "/callback",
+        content=payload,
+        headers={"X-Line-Signature": signature}
+    )
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok"}
+
+
+def test_quote_reply_memory_indexing_and_formatted_history():
+    manager = MemoryManager(max_history=10)
+    chat_id = "test_quote_group"
+
+    # 1. User A asks a question
+    msg1 = manager.add_message(
+        chat_id=chat_id,
+        sender_id="user_a",
+        sender_name="Harvey",
+        text="เสาร์นี้ไปสยามกันมั้ยพวกแกรรร",
+        is_bot=False,
+        message_id="msg_101"
+    )
+    assert msg1.message_id == "msg_101"
+
+    # 2. Lookup msg1 by ID
+    found_msg = manager.get_message(chat_id, "msg_101")
+    assert found_msg is not None
+    assert found_msg.text == "เสาร์นี้ไปสยามกันมั้ยพวกแกรรร"
+    assert found_msg.sender_name == "Harvey"
+
+    # 3. User B quote-replies to msg1
+    manager.add_message(
+        chat_id=chat_id,
+        sender_id="user_b",
+        sender_name="Pluem",
+        text="ไปดิ เจอที่ไหนดี",
+        is_bot=False,
+        message_id="msg_102",
+        quoted_message_id="msg_101"
+    )
+
+    # 4. Check formatted history includes the quote reference
+    hist = manager.get_group_memory(chat_id).get_history_formatted("Thomas")
+    assert "เสาร์นี้ไปสยามกันมั้ยพวกแกรรร" in hist
+    assert "(ตอบกลับ Harvey: \"เสาร์นี้ไปสยามกันมั้ยพวกแกรรร\")" in hist
+    assert "[Pluem (ตอบกลับ Harvey: \"เสาร์นี้ไปสยามกันมั้ยพวกแกรรร\")]: ไปดิ เจอที่ไหนดี" in hist
+
+
+def test_quote_reply_bot_binding():
+    manager = MemoryManager(max_history=10)
+    chat_id = "test_quote_bot_group"
+
+    # 1. Bot sends a reply
+    manager.add_message(
+        chat_id=chat_id,
+        sender_id="bot",
+        sender_name="Thomas",
+        text="ร้านหมูกระทะนี้เด็ดมากก ไปลองกัน!",
+        is_bot=True
+    )
+
+    # 2. Register sent message ID from LINE API
+    manager.register_bot_message_id("line_bot_msg_999", chat_id=chat_id)
+    assert manager.is_bot_message("line_bot_msg_999") is True
+
+    # 3. Verify bot message was indexed by the ID
+    bot_msg = manager.get_message(chat_id, "line_bot_msg_999")
+    assert bot_msg is not None
+    assert bot_msg.is_bot is True
+    assert "ร้านหมูกระทะนี้เด็ดมากก" in bot_msg.text
+
+    # 4. User replies to the bot's message
+    manager.add_message(
+        chat_id=chat_id,
+        sender_id="user_c",
+        sender_name="Jane",
+        text="ร้านเปิดกี่โมงอะ",
+        is_bot=False,
+        message_id="msg_103",
+        quoted_message_id="line_bot_msg_999"
+    )
+
+    hist = manager.get_group_memory(chat_id).get_history_formatted("Thomas")
+    assert "(ตอบกลับ Thomas (คุณ): \"ร้านหมูกระทะนี้เด็ดมากก ไปลองกัน!\")" in hist
+

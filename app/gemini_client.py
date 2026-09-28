@@ -43,11 +43,13 @@ class GeminiClient:
         history_context: str = "",
         sender_name: str = "เพื่อน",
         image_bytes: Optional[bytes] = None,
-        mime_type: str = "image/jpeg"
+        mime_type: str = "image/jpeg",
+        media_bytes: Optional[bytes] = None,
+        media_mime_type: Optional[str] = None
     ) -> str:
         """
         Generates a human-like response from Gemini 3.8 Flash (with automatic candidate fallback).
-        Incorporates group conversation history and handles text or image input.
+        Incorporates group conversation history and handles text, document, or image input.
         """
         if not self.is_configured:
             # Re-attempt init in case env var was updated at runtime
@@ -61,11 +63,15 @@ class GeminiClient:
         # Construct conversational input
         prompt_parts: List[Union[str, types.Part]] = []
 
-        if image_bytes:
+        # Handle multimodal data: accept either media_bytes or image_bytes
+        data_to_send = media_bytes if media_bytes is not None else image_bytes
+        target_mime = media_mime_type or mime_type
+
+        if data_to_send:
             try:
-                prompt_parts.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
-            except Exception as img_err:
-                logger.warning("Failed to create image Part: %s", img_err)
+                prompt_parts.append(types.Part.from_bytes(data=data_to_send, mime_type=target_mime))
+            except Exception as media_err:
+                logger.warning("Failed to create media Part: %s", media_err)
 
         # Frame the context cleanly
         context_block = ""
@@ -88,7 +94,7 @@ class GeminiClient:
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     temperature=0.85,
-                    max_output_tokens=800,
+                    max_output_tokens=1500,
                     thinking_config=types.ThinkingConfig(thinking_budget=0),
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
                 )
