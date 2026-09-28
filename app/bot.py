@@ -263,13 +263,15 @@ async def process_text_message(event: MessageEvent):
 
         messaging_api = MessagingApi(api_client)
 
-        # Trigger loading animation in LINE (supported in 1-on-1 chats only)
+        # Trigger loading animation in LINE in background (supported in 1-on-1 chats only)
         if settings.enable_loading_animation and not is_group and user_id:
-            try:
-                anim_req = ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=15)
-                messaging_api.show_loading_animation(anim_req)
-            except Exception as e:
-                logger.debug("Loading animation request ignored: %s", e)
+            def _trigger_animation():
+                try:
+                    anim_req = ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=15)
+                    messaging_api.show_loading_animation(anim_req)
+                except Exception as e:
+                    logger.debug("Loading animation request ignored: %s", e)
+            asyncio.create_task(asyncio.to_thread(_trigger_animation))
 
         # Check for slash commands
         parsed_cmd = parse_command(text)

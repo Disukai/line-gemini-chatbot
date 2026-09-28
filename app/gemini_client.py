@@ -87,8 +87,9 @@ class GeminiClient:
             try:
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.75,
-                    top_p=0.95
+                    temperature=0.8,
+                    max_output_tokens=300,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
                 )
                 response = self._client.models.generate_content(
                     model=model_name,
