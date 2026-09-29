@@ -33,11 +33,13 @@ from app.persona import build_system_prompt
 from app.commands import parse_command, execute_command
 from app.gemini_client import gemini_client
 from app.chat_tracker import chat_tracker
+from app.jev_service import jev_service, JevDecision
 from app.file_utils import (
     get_file_category,
     decode_text_file,
     extract_text_from_docx,
     extract_text_from_xlsx,
+    detect_image_mime,
 )
 
 logger = logging.getLogger("line_gemini_bot")
@@ -193,13 +195,14 @@ def should_trigger_response(
     nicknames: list[str],
     trigger_mode: str,
     bot_user_id: Optional[str] = None,
-    chat_id: Optional[str] = None
+    chat_id: Optional[str] = None,
+    jev_decision: Optional[JevDecision] = None
 ) -> TriggerResult:
     """
     Determines if the bot should speak up in the conversation.
     Returns TriggerResult(should_reply, is_spontaneous).
-    Direct calls (mentions, nicknames, quote replies, commands) always trigger with is_spontaneous=False.
-    Spontaneous chime-ins in groups trigger with is_spontaneous=True based on probability & cooldowns.
+    Direct calls (mentions, nicknames, quote replies, commands, Jev addressing) always trigger with is_spontaneous=False.
+    Spontaneous chime-ins in groups trigger with is_spontaneous=True based on Jev/probability & cooldowns.
     """
     # 1. Always respond in 1-on-1 private chat
     if not is_group:
@@ -252,7 +255,13 @@ def should_trigger_response(
         if name and name in lower_text:
             return TriggerResult(True, False)
 
-    # 7. Smart trigger mode: check for direct questions or requests for help
+    # 7. TypeSafe Jev System One semantic addressing check
+    if jev_decision and not jev_decision.is_fallback:
+        if jev_decision.is_addressing_bot:
+            logger.info("Jev detected direct address to bot -> Triggering direct response (0 cooldown)!")
+            return TriggerResult(True, False)
+
+    # 8. Smart trigger mode: check for direct questions or requests for help
     if trigger_mode == "smart":
         smart_keywords = [
             "มั้ย", "ไหม", "อะไร", "ใคร", "ที่ไหน", "ยังไง", "ทำไม",
@@ -262,11 +271,22 @@ def should_trigger_response(
         if any(kw in lower_text for kw in smart_keywords) or lower_text.endswith("?"):
             return TriggerResult(True, True)
 
-    # 8. Natural Spontaneous Chime-in mode ("chime_in" or "auto")
+    # 9. Natural Spontaneous Chime-in mode ("chime_in" or "auto")
     if trigger_mode in ("chime_in", "auto"):
         # Trivial message filter: ignore extremely short or acknowledgment-only texts
         if len(clean_text) < 2 or clean_text.lower() in ("ok", "k", "เค", "คับ", "ครับ", "ค่ะ", ".", "!", "?", "55"):
             return TriggerResult(False, False)
+
+        # Check if Jev System One decided that the bot should chime in
+        if jev_decision and not jev_decision.is_fallback and jev_decision.should_reply:
+            if chat_id:
+                mem = memory_manager.get_group_memory(chat_id)
+                now = time.time()
+                if mem.last_bot_reply_time > 0 and (now - mem.last_bot_reply_time) < settings.spontaneous_cooldown_seconds:
+                    logger.debug("Jev suggested reply, but spontaneous cooldown active in [%s]", chat_id)
+                    return TriggerResult(False, False)
+            logger.info("Jev System One triggered spontaneous chime-in in [%s]!", chat_id)
+            return TriggerResult(True, True)
 
         question_keywords = [
             "มั้ย", "ไหม", "อะไร", "ใคร", "ที่ไหน", "ยังไง", "ทำไม",
@@ -327,6 +347,37 @@ async def process_text_message(event: MessageEvent):
         current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.effective_group_trigger_mode)
         bot_user_id = await asyncio.to_thread(get_bot_user_id, api_client)
 
+        # Look up replied/quoted message details if user quoted someone
+        quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
+        quoted_text_for_jev = quoted_msg.text if quoted_msg else ""
+        quoted_image_bytes = None
+        quoted_image_mime = "image/jpeg"
+
+        if quoted_id:
+            try:
+                blob_api = MessagingApiBlob(api_client)
+                fetched_blob = await asyncio.to_thread(blob_api.get_message_content, quoted_id)
+                if fetched_blob and len(fetched_blob) > 0:
+                    quoted_image_bytes = bytes(fetched_blob)
+                    quoted_image_mime = detect_image_mime(quoted_image_bytes)
+                    logger.info("Successfully fetched quoted image binary (%d bytes) for message [%s]", len(quoted_image_bytes), quoted_id)
+            except Exception as img_err:
+                logger.debug("Quoted message [%s] is not a downloadable image blob: %s", quoted_id, img_err)
+
+        # Retrieve brief recent chat history for Jev System One semantic understanding
+        mem = memory_manager.get_group_memory(chat_id)
+        recent_snippet = mem.get_history_formatted(settings.bot_name)[-600:]
+
+        # Fast (<0.4s) TypeSafe Jev evaluation for intent, trigger, and dynamic tone steering
+        jev_decision = await jev_service.evaluate_message(
+            text=text,
+            sender_name=sender_name,
+            bot_name=settings.bot_name,
+            nicknames=settings.bot_nicknames,
+            recent_context=recent_snippet,
+            quoted_context=quoted_text_for_jev
+        )
+
         decision = should_trigger_response(
             text=text,
             event=event,
@@ -335,7 +386,8 @@ async def process_text_message(event: MessageEvent):
             nicknames=settings.bot_nicknames,
             trigger_mode=current_trigger_mode,
             bot_user_id=bot_user_id,
-            chat_id=chat_id
+            chat_id=chat_id,
+            jev_decision=jev_decision
         )
         should_reply, is_spontaneous = decision.should_reply, decision.is_spontaneous
 
@@ -347,7 +399,8 @@ async def process_text_message(event: MessageEvent):
             text=text,
             is_bot=False,
             message_id=message_id,
-            quoted_message_id=quoted_id
+            quoted_message_id=quoted_id,
+            chat_type="group" if is_group else "user"
         )
 
         if not should_reply:
@@ -366,8 +419,6 @@ async def process_text_message(event: MessageEvent):
                     logger.debug("Loading animation request ignored: %s", e)
             asyncio.create_task(asyncio.to_thread(_trigger_animation))
 
-        # Look up replied/quoted message details if user quoted someone
-        quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
         quoted_context_block = ""
         if quoted_msg:
             q_author = f"{settings.bot_name} (ตัวคุณเอง)" if quoted_msg.is_bot else quoted_msg.sender_name
@@ -377,23 +428,33 @@ async def process_text_message(event: MessageEvent):
             if quoted_msg.file_desc:
                 extras.append(f"ไฟล์แนบ: {quoted_msg.file_desc}")
             extra_info = f" [{', '.join(extras)}]" if extras else ""
+            img_note = " (มีรูปภาพเดิมที่ผู้ใช้รีพลายแนบมาด้วย โดยส่งภาพนี้ให้ AI ดูแล้ว)" if quoted_image_bytes else ""
 
             quoted_context_block = (
                 f"[บริบทสำคัญ: {sender_name} กำลังกดรีพลาย (Quote Reply) ตอบกลับข้อความเดิมของ '{q_author}']\n"
-                f"- ข้อความเดิมที่ถูกรีพลาย: \"{quoted_msg.text}\"{extra_info}\n"
+                f"- ข้อความเดิมที่ถูกรีพลาย: \"{quoted_msg.text}\"{extra_info}{img_note}\n"
                 f"- ข้อความใหม่ที่ {sender_name} พิมพ์ตอบกลับมา: \"{text}\"\n"
                 f"คำแนะนำสำหรับ {settings.bot_name}: ให้ตอบโดยเชื่อมโยงกับข้อความเดิมที่ {sender_name} ตอบกลับมาอย่างเป็นธรรมชาติ "
                 f"เหมือนเพื่อนที่จำได้ว่ากำลังคุยเรื่องอะไรกันอยู่ ไม่ต้องพูดซ้ำประโยคเดิมหมด แค่คุยต่อให้ลื่นไหล\n\n"
             )
+        elif quoted_image_bytes:
+            quoted_context_block = (
+                f"[บริบทสำคัญ: {sender_name} กำลังกดรีพลาย (Quote Reply) รูปภาพที่ส่งมาก่อนหน้านี้ในแชท]\n"
+                f"- ข้อความที่ {sender_name} พิมพ์ถามเกี่ยวกับรูปภาพ: \"{text}\"\n"
+                f"คำแนะนำสำหรับ {settings.bot_name}: ให้อ่านและตอบคำถามเกี่ยวกับรูปภาพที่ {sender_name} รีพลายมาทันทีอย่างถูกต้อง ชัดเจน และตรงประเด็น\n\n"
+            )
         elif quoted_id:
             quoted_context_block = (
-                f"[บริบท: {sender_name} กำลังกดรีพลาย (Quote Reply) ตอบกลับข้อความเดิมในแชท แต่ข้อความนั้นเก่าเกินกว่าประวัติในความจำ]\n"
+                f"[บริบท: {sender_name} กำลังกดรีพลาย (Quote Reply) ข้อความเดิมในแชท]\n"
                 f"- ข้อความที่ {sender_name} พิมพ์: \"{text}\"\n\n"
             )
 
         # Check for slash commands
         parsed_cmd = parse_command(text)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
+        cross_chat_info = memory_manager.get_cross_chat_context(chat_id, sender_id=user_id)
+        if cross_chat_info:
+            history_context = f"{history_context}\n\n{cross_chat_info}" if history_context else cross_chat_info
 
         if parsed_cmd:
             cmd, args = parsed_cmd
@@ -412,23 +473,39 @@ async def process_text_message(event: MessageEvent):
             persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
             system_instruction = build_system_prompt(settings.bot_name, persona_key)
 
+            # Dynamic tone steering from TypeSafe Jev System One
+            tone_directive = ""
+            if jev_decision and not jev_decision.is_fallback:
+                if jev_decision.tone == "normal":
+                    tone_directive = (
+                        f"\n\n[คำแนะนำสไตล์ตอบ: ตอบแบบมนุษย์ธรรมดาปกติ เป็นเพื่อนที่คุยรู้เรื่อง ตรงประเด็น ชัดเจน สุภาพเป็นกันเอง "
+                        f"ไม่ต้องยัดเยียดสแลง ไม่ต้องใช้คำว่า bro หรือศัพท์มีมโดยไม่จำเป็น ห้ามใช้สำนวนนิยายหรือหนังฝรั่ง]"
+                    )
+                elif jev_decision.tone == "banter":
+                    tone_directive = (
+                        f"\n\n[คำแนะนำสไตล์ตอบ: จังหวะนี้เพื่อนปั่น/แซว ตอบแซวสั้นๆ คมๆ 1-2 ประโยค แบบ Gen Z shitpost/brainrot "
+                        f"(ตึง, ปั่น, รั่ว, ช็อตฟีล, bro, cooked, real, 💀, 5555555) ไม่ฝืน ไม่ยัดเยียด ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนนิยาย/หนังฝรั่ง]"
+                    )
+
             if is_spontaneous:
                 user_msg = (
                     f"{quoted_context_block}{text}\n\n"
-                    f"[บรีฟสำหรับ {settings.bot_name}: เพื่อนกำลังคุยกันในกลุ่ม ให้ตอบแจมหรือแซวสั้นๆ 1-2 ประโยค "
-                    f"ฟีลเพื่อนในกลุ่มนั่งฟังอยู่แล้วสวนกลับมาแบบกวนๆ หรือร่วมวงคุยตามธรรมชาติ "
-                    f"ใช้ภาษาแชทวัยรุ่นไทย/Gen Z สบายๆ (ตึง, ปั่น, รั่ว, ช็อตฟีล, bro, real, 5555555) "
-                    f"ดูไม่ฝืน ไม่ยัดเยียดสแลง ห้ามใช้สำนวนแปลหนังฝรั่งหรือนิยายเด็ดขาด ห้ามแนะนำตัว]"
+                    f"[บรีฟสำหรับ {settings.bot_name}: เพื่อนกำลังคุยกันในกลุ่ม ให้ตอบแจมหรือแซวสั้นๆ 1 ประโยค "
+                    f"ฟีลเพื่อนในกลุ่มนั่งฟังอยู่แล้วสวนกลับมาแบบกวนๆ คมๆ หรือร่วมวงคุยตามธรรมชาติ "
+                    f"ดูไม่ฝืน ไม่ยัดเยียด ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามใช้สำนวนแปลหนังฝรั่งหรือนิยายเด็ดขาด ห้ามแนะนำตัว]"
+                    f"{tone_directive}"
                 )
             else:
-                user_msg = f"{quoted_context_block}{text}"
+                user_msg = f"{quoted_context_block}{text}{tone_directive}"
 
             reply_text = await asyncio.to_thread(
                 gemini_client.generate_chat_response,
                 user_message=user_msg,
                 system_instruction=system_instruction,
                 history_context=history_context,
-                sender_name=sender_name
+                sender_name=sender_name,
+                image_bytes=quoted_image_bytes,
+                mime_type=quoted_image_mime
             )
 
         # Record bot reply in memory
@@ -437,7 +514,8 @@ async def process_text_message(event: MessageEvent):
             sender_id="bot",
             sender_name=settings.bot_name,
             text=reply_text,
-            is_bot=True
+            is_bot=True,
+            chat_type="group" if is_group else "user"
         )
 
         # Send reply back to LINE safely chunked within character limits
@@ -447,7 +525,7 @@ async def process_text_message(event: MessageEvent):
                 reply_token=event.reply_token,
                 messages=text_messages
             )
-            reply_res = messaging_api.reply_message(reply_request)
+            reply_res = await asyncio.to_thread(messaging_api.reply_message, reply_request)
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
@@ -458,7 +536,7 @@ async def process_text_message(event: MessageEvent):
             if chat_id:
                 try:
                     push_req = PushMessageRequest(to=chat_id, messages=text_messages)
-                    push_res = messaging_api.push_message(push_req)
+                    push_res = await asyncio.to_thread(messaging_api.push_message, push_req)
                     if push_res and hasattr(push_res, "sent_messages"):
                         for sm in push_res.sent_messages:
                             if hasattr(sm, "id") and sm.id:
@@ -491,8 +569,6 @@ async def process_image_message(event: MessageEvent):
             logger.error("Failed to fetch image binary from LINE: %s", e)
             return
 
-        current_trigger_mode = memory_manager.get_trigger_mode(chat_id, settings.effective_group_trigger_mode)
-
         # Look up replied message if this image was sent as a quote reply
         quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
         quoted_image_context = ""
@@ -502,57 +578,30 @@ async def process_image_message(event: MessageEvent):
                 f"\n[บริบทเพิ่มเติม: ผู้ใช้ส่งรูปภาพนี้มาเพื่อตอบกลับ (Quote Reply) ข้อความของ '{q_author}': \"{quoted_msg.text}\"]\n"
             )
 
-        # In groups, check if we should spontaneously react or skip
-        if is_group and current_trigger_mode != "all":
-            mem = memory_manager.get_group_memory(chat_id)
-            now = time.time()
-            can_spontaneously_react = (
-                current_trigger_mode in ("chime_in", "smart", "auto")
-                and mem.messages_since_bot_spoke >= settings.spontaneous_min_messages
-                and (mem.last_bot_reply_time == 0 or (now - mem.last_bot_reply_time) >= settings.spontaneous_cooldown_seconds)
-                and random.random() < settings.spontaneous_image_rate
-            )
-
-            # If user quoted bot's message directly, always react
-            if quoted_id and memory_manager.is_bot_message(quoted_id):
-                can_spontaneously_react = True
-
-            if not can_spontaneously_react:
-                memory_manager.add_message(
-                    chat_id=chat_id,
-                    sender_id=user_id or "unknown",
-                    sender_name=sender_name,
-                    text="[ส่งรูปภาพ]",
-                    is_bot=False,
-                    message_id=image_id,
-                    quoted_message_id=quoted_id,
-                    image_desc="รูปภาพที่ส่งเข้ามาในแชท"
-                )
-                logger.info("Group image saved to history buffer without reply: [%s]", sender_name)
-                return
-            else:
-                logger.info("Spontaneous image comment triggered in chat [%s]!", chat_id)
-
         # Show loading animation (1-on-1 only)
         if settings.enable_loading_animation and not is_group and user_id:
             try:
                 anim_req = ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=15)
-                messaging_api.show_loading_animation(anim_req)
+                await asyncio.to_thread(messaging_api.show_loading_animation, anim_req)
             except Exception as e:
                 logger.debug("Loading animation request ignored: %s", e)
+
+        image_mime = detect_image_mime(image_bytes)
 
         persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
         system_instruction = build_system_prompt(settings.bot_name, persona_key)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
+        cross_chat_info = memory_manager.get_cross_chat_context(chat_id, sender_id=user_id)
+        if cross_chat_info:
+            history_context = f"{history_context}\n\n{cross_chat_info}" if history_context else cross_chat_info
 
         user_prompt = (
             f"เพื่อนส่งรูปภาพนี้มาในแชท {quoted_image_context}ช่วยดูและอ่านรายละเอียดในรูปภาพอย่างละเอียด:\n"
             "1. OCR & อ่านข้อความ: ถ้าในรูปมีตัวหนังสือ ป้าย ข้อความ สลิป ใบเสร็จ เอกสาร การบ้าน เมนูอาหาร สกรีนช็อตโค้ด หรือหน้าจอแชท ให้อ่านข้อความทั้งหมดและช่วยแปล/ตอบ/วิเคราะห์/สรุป/ช่วยคิดเงินให้เพื่อนทันที\n"
             "2. ถ้าเป็นคำถามหรือการบ้าน: ช่วยตอบและอธิบายเฉลยให้ถูกต้อง ชัดเจน\n"
             "3. ถ้าเป็นรูปทั่วไป/มีม/สถานที่/ของกิน/รูปคน: สังเกตดีเทลในรูปแล้วคุย แซว หรือเม้าท์แบบเพื่อนซี้ Gen Z รู้จริง ไม่พูดลอยๆ (ช็อตฟีล, ป้ายยา, แซวดีเทลในรูป)\n"
-            "4. โทนการพูด: เพื่อนสนิท Gen Z คุยเป็นธรรมชาติ (ตึง, ปั่น, สภาพ, bro, real, 5555555) "
-            "ถ้าเป็นเรื่องมีสาระ/งาน/บิล ให้ตอบสาระตรงๆ ชัดเจน ถ้าเป็นรูปเล่น/มีม ให้แซวกวนๆ ได้ "
-            "ห้ามสำนวนแปลนิยาย/หนังฝรั่งเด็ดขาด ห้ามทักทายแบบทางการ"
+            "4. โทนการพูด: เพื่อนสนิท Gen Z คุยเป็นธรรมชาติ (ตึง, ปั่น, bro, cooked, real, 💀, 5555555) "
+            "ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนแปลนิยาย/หนังฝรั่งเด็ดขาด ห้ามทักทายแบบทางการ\n"
         )
 
         reply_text = await asyncio.to_thread(
@@ -562,26 +611,28 @@ async def process_image_message(event: MessageEvent):
             history_context=history_context,
             sender_name=sender_name,
             image_bytes=image_bytes,
-            mime_type="image/jpeg"
+            mime_type=image_mime
         )
 
-        # Save incoming image action and bot reply into memory buffer
+        # Save incoming image action and bot reply into unified memory buffer
         memory_manager.add_message(
             chat_id=chat_id,
             sender_id=user_id or "unknown",
             sender_name=sender_name,
-            text="[ส่งรูปภาพ]",
+            text=f"[ส่งรูปภาพ] {reply_text[:120]}",
             is_bot=False,
             message_id=image_id,
             quoted_message_id=quoted_id,
-            image_desc="รูปภาพ/เอกสาร/สลิปที่ส่งเข้ามาในแชท"
+            image_desc=reply_text[:200],
+            chat_type="group" if is_group else "user",
         )
         memory_manager.add_message(
             chat_id=chat_id,
             sender_id="bot",
             sender_name=settings.bot_name,
             text=reply_text,
-            is_bot=True
+            is_bot=True,
+            chat_type="group" if is_group else "user",
         )
 
         text_messages = [TextMessage(text=c) for c in chunk_line_text(reply_text)]
@@ -590,7 +641,7 @@ async def process_image_message(event: MessageEvent):
                 reply_token=event.reply_token,
                 messages=text_messages
             )
-            reply_res = messaging_api.reply_message(reply_request)
+            reply_res = await asyncio.to_thread(messaging_api.reply_message, reply_request)
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
@@ -601,7 +652,11 @@ async def process_image_message(event: MessageEvent):
             if chat_id:
                 try:
                     push_req = PushMessageRequest(to=chat_id, messages=text_messages)
-                    messaging_api.push_message(push_req)
+                    push_res = await asyncio.to_thread(messaging_api.push_message, push_req)
+                    if push_res and hasattr(push_res, "sent_messages"):
+                        for sm in push_res.sent_messages:
+                            if hasattr(sm, "id") and sm.id:
+                                memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
                 except Exception as push_err:
                     logger.error("push_message fallback failed: %s", push_err)
 
@@ -657,6 +712,9 @@ async def process_file_message(event: MessageEvent):
         persona_key = memory_manager.get_persona(chat_id, settings.default_persona)
         system_instruction = build_system_prompt(settings.bot_name, persona_key)
         history_context = memory_manager.get_group_memory(chat_id).get_history_formatted(settings.bot_name)
+        cross_chat_info = memory_manager.get_cross_chat_context(chat_id, sender_id=user_id)
+        if cross_chat_info:
+            history_context = f"{history_context}\n\n{cross_chat_info}" if history_context else cross_chat_info
 
         reply_text = ""
 
@@ -773,9 +831,9 @@ async def process_file_message(event: MessageEvent):
         else:
             size_kb = max(1, file_size // 1024)
             reply_text = (
-                f"แกรรร ไฟล์ '{file_name}' ({size_kb} KB) อันนี้เรายังแกะเนื้อหาข้างในไม่ได้อะ 5555555\n"
-                f"ตอนนี้เรารองรับอ่านไฟล์ PDF, Word (.docx), Excel (.xlsx), CSV, Text/Code (.txt, .json, .py, .md ฯลฯ), รูปภาพ และไฟล์เสียง นะแกกก "
-                f"ลองแปลงไฟล์หรือแคปรูปส่งมาให้เราดูใหม่อีกทีนะะะ!"
+                f"ไฟล์ '{file_name}' ({size_kb} KB) อันนี้เรายังแกะเนื้อหาข้างในไม่ได้อะ 5555555\n"
+                f"ตอนนี้เรารองรับอ่านไฟล์ PDF, Word (.docx), Excel (.xlsx), CSV, Text/Code (.txt, .json, .py, .md ฯลฯ), รูปภาพ และไฟล์เสียง นะ "
+                f"ลองแปลงไฟล์หรือแคปรูปส่งมาให้ดูใหม่อีกทีดิ๊!"
             )
 
         # Record file message and bot reply in conversation history
@@ -787,14 +845,16 @@ async def process_file_message(event: MessageEvent):
             is_bot=False,
             message_id=file_id,
             quoted_message_id=quoted_id,
-            file_desc=f"{file_name} ({file_size} bytes)"
+            file_desc=f"{file_name} ({file_size} bytes)",
+            chat_type="group" if is_group else "user",
         )
         memory_manager.add_message(
             chat_id=chat_id,
             sender_id="bot",
             sender_name=settings.bot_name,
             text=reply_text,
-            is_bot=True
+            is_bot=True,
+            chat_type="group" if is_group else "user",
         )
 
         text_messages = [TextMessage(text=c) for c in chunk_line_text(reply_text)]
@@ -803,7 +863,7 @@ async def process_file_message(event: MessageEvent):
                 reply_token=event.reply_token,
                 messages=text_messages
             )
-            reply_res = messaging_api.reply_message(reply_request)
+            reply_res = await asyncio.to_thread(messaging_api.reply_message, reply_request)
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
@@ -814,7 +874,7 @@ async def process_file_message(event: MessageEvent):
             if chat_id:
                 try:
                     push_req = PushMessageRequest(to=chat_id, messages=text_messages)
-                    push_res = messaging_api.push_message(push_req)
+                    push_res = await asyncio.to_thread(messaging_api.push_message, push_req)
                     if push_res and hasattr(push_res, "sent_messages"):
                         for sm in push_res.sent_messages:
                             if hasattr(sm, "id") and sm.id:
@@ -843,11 +903,11 @@ async def process_join_event(event: JoinEvent):
                 reply_token=event.reply_token,
                 messages=[TextMessage(text=welcome_text)]
             )
-            reply_res = messaging_api.reply_message(req)
+            reply_res = await asyncio.to_thread(messaging_api.reply_message, req)
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
-                        memory_manager.register_bot_message_id(sm.id)
+                        memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
             logger.info("Sent join welcome message to chat [%s]", chat_id)
         except Exception as e:
             logger.error("Failed to send join greeting: %s", e)
@@ -855,8 +915,10 @@ async def process_join_event(event: JoinEvent):
 
 async def process_follow_event(event: FollowEvent):
     """Greets a user when they add the bot in a 1-on-1 private chat."""
+    chat_id, user_id, _ = extract_chat_and_user_ids(event)
+    chat_tracker.register_chat(chat_id, "user")
     welcome_text = (
-        f"หวัดดีครับ/ว่าไงเพื่อน! 👋 เรา '{settings.bot_name}' เพื่อน AI ในไลน์แกเอง 5555555\n"
+        f"ว่าไง! 👋 เรา '{settings.bot_name}' เอง 5555555\n"
         f"มีอะไรมาคุย ปรึกษา วางแผนงาน ถามเรื่องเรียน/โค้ด หรือบ่นได้ตลอดนะ ฟีลเพื่อนสนิทคุยกันชิลๆ\n\n"
         f"💡 ลองพิมพ์คุยเล่น หรือลองคำสั่งพวกนี้ดู:\n"
         f"- `/news` : สรุปข่าวดังวันนี้ กระชับ ไม่ตกเทรนด์\n"
@@ -873,10 +935,10 @@ async def process_follow_event(event: FollowEvent):
                 reply_token=event.reply_token,
                 messages=[TextMessage(text=welcome_text)]
             )
-            reply_res = messaging_api.reply_message(req)
+            reply_res = await asyncio.to_thread(messaging_api.reply_message, req)
             if reply_res and hasattr(reply_res, "sent_messages"):
                 for sm in reply_res.sent_messages:
                     if hasattr(sm, "id") and sm.id:
-                        memory_manager.register_bot_message_id(sm.id)
+                        memory_manager.register_bot_message_id(sm.id, chat_id=chat_id)
         except Exception as e:
             logger.error("Failed to send follow greeting: %s", e)

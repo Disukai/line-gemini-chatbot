@@ -34,6 +34,12 @@ class Settings(BaseSettings):
         description="Primary Gemini Model identifier (e.g. gemini-3.8-flash)"
     )
 
+    # TypeSafe Jev (System One AI) Credentials
+    typesafe_api_key: str = Field(
+        default="",
+        description="TypeSafe API Key for Jev System One semantic decisions"
+    )
+
     # Bot Identity & Persona
     bot_name: str = Field(
         default="Thomas",

@@ -63,6 +63,21 @@ def get_file_category(file_name: str) -> Tuple[str, str]:
     return "unsupported", "application/octet-stream"
 
 
+def detect_image_mime(data: bytes | bytearray) -> str:
+    """Detects image MIME type from binary magic bytes, defaulting to image/jpeg."""
+    if not data or len(data) < 3:
+        return "image/jpeg"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(data) >= 4 and data[:4] in (b"GIF87a", b"GIF89a", b"GIF8"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
 def decode_text_file(file_bytes: bytes, max_chars: int = 40000) -> str:
     """
     Decodes plain text/code bytes into a string with UTF-8 and TIS-620 fallback.

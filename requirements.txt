@@ -9,3 +9,4 @@ httpx==0.28.1
 pillow==12.3.0
 python-dateutil==2.9.0.post0
 requests==2.34.2
+typesafe-sdk>=0.7.2

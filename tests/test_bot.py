@@ -580,7 +580,7 @@ async def test_process_text_message_flow():
     event.message.mention = None
 
     with patch("app.bot.get_api_client") as mock_get_client, \
-         patch("app.bot.gemini_client.generate_chat_response", return_value="สบายดีมากกกกแก") as mock_gemini, \
+         patch("app.bot.gemini_client.generate_chat_response", return_value="สบายดีมาก bro") as mock_gemini, \
          patch("app.bot.MessagingApi") as mock_msg_api_cls:
         
         mock_client = MagicMock()
@@ -593,5 +593,123 @@ async def test_process_text_message_flow():
         # Verify gemini was called and reply was sent
         assert mock_gemini.called
         assert mock_msg_api.reply_message.called
+
+
+def test_jev_addressing_trigger():
+    from app.jev_service import JevDecision
+
+    mock_event = MagicMock()
+    mock_event.message = MagicMock()
+    mock_event.message.quoted_message_id = None
+    mock_event.message.mention = None
+
+    # When Jev detects that the user is addressing the bot, it should trigger with is_spontaneous=False
+    jev_dec = JevDecision(is_addressing_bot=True, should_reply=True, tone="normal", is_fallback=False)
+    res = should_trigger_response(
+        text="ช่วยดูตรงนี้ให้หน่อยได้ไหม",
+        event=mock_event,
+        is_group=True,
+        bot_name="Thomas",
+        nicknames=["thomas", "โทมัส"],
+        trigger_mode="mention",
+        jev_decision=jev_dec
+    )
+    assert res.should_reply is True
+    assert res.is_spontaneous is False
+
+
+@pytest.mark.asyncio
+async def test_process_image_message_flow():
+    from app.bot import process_image_message
+
+    event = MagicMock()
+    event.reply_token = "test_img_reply_token"
+    event.source.type = "group"
+    event.source.group_id = "C_group_test_01"
+    event.source.user_id = "U_user_test_01"
+    event.message.id = "img_msg_test_001"
+    event.message.quoted_message_id = None
+
+    fake_image_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+
+    with patch("app.bot.get_api_client") as mock_get_client, \
+         patch("app.bot.MessagingApiBlob") as mock_blob_cls, \
+         patch("app.bot.gemini_client.generate_chat_response", return_value="อันนี้คือภาพสลิปโอนเงิน ยอด 500 บาท เรียบร้อยนะ") as mock_gemini, \
+         patch("app.bot.MessagingApi") as mock_msg_api_cls:
+
+        mock_client = MagicMock()
+        mock_get_client.return_value.__enter__.return_value = mock_client
+
+        mock_blob = MagicMock()
+        mock_blob.get_message_content.return_value = fake_image_bytes
+        mock_blob_cls.return_value = mock_blob
+
+        mock_msg_api = MagicMock()
+        mock_msg_api_cls.return_value = mock_msg_api
+
+        await process_image_message(event)
+
+        # Verify blob download was invoked, gemini received image, and reply was sent
+        assert mock_blob.get_message_content.called
+        assert mock_gemini.called
+        assert mock_msg_api.reply_message.called
+
+
+def test_cross_chat_memory_sync():
+    """Verify that messages and facts from 1-on-1 private chat sync into group context."""
+    mem_mgr = MemoryManager(max_history=10)
+    user_id = "U_user_harvey"
+    group_id = "C_group_friends"
+
+    # User chats with Thomas 1-on-1
+    mem_mgr.add_message(
+        chat_id=user_id,
+        sender_id=user_id,
+        sender_name="Harvey",
+        text="เราชื่อฮาร์วีย์ ชอบกินชาเขียวมาก แล้วก็กำลังทำโปรเจกต์ LINE bot อยู่",
+        is_bot=False,
+        message_id="msg_private_1",
+        chat_type="user"
+    )
+    mem_mgr.add_message(
+        chat_id=user_id,
+        sender_id="bot",
+        sender_name="Thomas",
+        text="โอเคจำได้ละ bro ชอบชาเขียวกับทำ LINE bot",
+        is_bot=True,
+        message_id="msg_private_2",
+        chat_type="user"
+    )
+
+    # Now Harvey talks in the group chat
+    context = mem_mgr.get_cross_chat_context(current_chat_id=group_id, sender_id=user_id)
+    assert context != ""
+    assert "ความจำเชื่อมโยงข้ามแชท" in context
+    assert "ข้อมูลสำคัญเกี่ยวกับ Harvey" in context
+    assert "ชอบกินชาเขียว" in context or "LINE bot" in context
+    assert "แชทส่วนตัว" in context
+
+
+def test_get_message_global_fallback():
+    """Verify that get_message can locate messages from other chats via global indexing."""
+    mem_mgr = MemoryManager(max_history=10)
+    chat_a = "C_room_a"
+    chat_b = "C_room_b"
+
+    mem_mgr.add_message(
+        chat_id=chat_a,
+        sender_id="user_1",
+        sender_name="Alice",
+        text="สวัสดีห้อง A",
+        message_id="msg_unique_123"
+    )
+
+    # Should be findable from chat_b via global index fallback
+    found = mem_mgr.get_message(chat_b, "msg_unique_123")
+    assert found is not None
+    assert found.text == "สวัสดีห้อง A"
+    assert found.sender_name == "Alice"
+
+
 
 

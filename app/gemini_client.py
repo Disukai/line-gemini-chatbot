@@ -123,7 +123,7 @@ class GeminiClient:
                     candidate = response.candidates[0]
                     finish_reason = getattr(candidate, "finish_reason", None)
                     if finish_reason and str(finish_reason).upper() in ["SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT"]:
-                        return "อันนี้ติดฟิลเตอร์ความปลอดภัยเฉยเลยแก 5555555 ขอผ่านก่อนนะ ลองเปลี่ยนเรื่องคุยดู!"
+                        return "อันนี้ติดฟิลเตอร์ความปลอดภัยเฉยเลย 5555555 ขอผ่านก่อนนะ ลองเปลี่ยนเรื่องคุยดู!"
 
                 if response and response.text:
                     self._working_model = model_name
