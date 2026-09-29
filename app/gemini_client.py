@@ -85,7 +85,7 @@ class GeminiClient:
         # Frame the context cleanly
         context_block = ""
         if history_context:
-            context_block = f"--- ประวัติการคุยล่าสุดในกลุ่ม ---\n{history_context}\n--- จบประวัติ ---\n\n"
+            context_block = f"--- ประวัติการคุยล่าสุด ---\n{history_context}\n--- จบประวัติ ---\n\n"
 
         current_turn = f"{context_block}[{sender_name}]: {user_message}"
         prompt_parts.append(current_turn)
@@ -109,8 +109,8 @@ class GeminiClient:
             try:
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.85,
-                    max_output_tokens=1500
+                    temperature=0.75,
+                    max_output_tokens=2048
                 )
                 response = self._client.models.generate_content(
                     model=model_name,

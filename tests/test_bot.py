@@ -711,5 +711,33 @@ def test_get_message_global_fallback():
     assert found.sender_name == "Alice"
 
 
+def test_group_intelligence_parity_prompt():
+    """Verify that system prompt enforces high-IQ intelligence parity in groups and chats."""
+    prompt = build_system_prompt("Thomas", "friend")
+    assert "High-IQ" in prompt or "ฉลาดมาก" in prompt
+    assert "ความฉลาดต้องเท่าเทียมกัน 100%" in prompt
+    assert "ห้ามทำตัวโง่เด็ดขาด" in prompt
+
+
+def test_smart_trigger_direct_question():
+    """Verify that asking a direct question in smart mode triggers with is_spontaneous=False."""
+    mock_event = MagicMock()
+    mock_event.message = MagicMock()
+    mock_event.message.quoted_message_id = None
+    mock_event.message.mention = None
+
+    res = should_trigger_response(
+        text="ช่วยคิดหน่อยว่าจะเขียนโค้ดยังไงดี",
+        event=mock_event,
+        is_group=True,
+        bot_name="Thomas",
+        nicknames=["thomas", "โทมัส"],
+        trigger_mode="smart"
+    )
+    assert res.should_reply is True
+    assert res.is_spontaneous is False
+
+
+
 
 
