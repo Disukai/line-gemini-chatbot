@@ -169,6 +169,10 @@ class MemoryManager:
         # {user_id: {"name": str, "facts": List[str], "recent_topics": List[str]}}
         self.user_knowledge: Dict[str, Dict] = {}
 
+        # Persistent image memory vault: {image_id: {"summary": str, "ocr_text": str, "tags": list, ...}}
+        self.image_vault: Dict[str, dict] = {}
+        self.max_image_vault: int = 500
+
         # Track sent bot message IDs so quote replies to the bot are recognized
         self._bot_message_ids: Set[str] = set()
         self._bot_message_id_order: List[str] = []
@@ -222,9 +226,11 @@ class MemoryManager:
 
                 # Load user knowledge
                 self.user_knowledge = data.get("user_knowledge", {})
+                # Load image vault
+                self.image_vault = data.get("image_vault", {})
                 logger.info(
-                    "Unified memory loaded successfully: %d chats, %d global messages, %d user profiles",
-                    len(self.chats), len(self.global_messages_by_id), len(self.user_knowledge)
+                    "Unified memory loaded successfully: %d chats, %d global messages, %d user profiles, %d images in vault",
+                    len(self.chats), len(self.global_messages_by_id), len(self.user_knowledge), len(self.image_vault)
                 )
         except Exception as e:
             logger.warning("Failed to load unified memory: %s", e)
@@ -247,6 +253,7 @@ class MemoryManager:
                 "chats": serialized_chats,
                 "global_messages": recent_global,
                 "user_knowledge": self.user_knowledge,
+                "image_vault": self.image_vault,
                 "updated_at": time.time()
             }
             tmp_unified = UNIFIED_MEMORY_FILE.with_suffix(".tmp")
@@ -448,6 +455,148 @@ class MemoryManager:
 
     def cache_name(self, user_id: str, name: str, is_fallback: bool = False):
         self.profile_cache[user_id] = (name, time.time(), is_fallback)
+
+    def save_visual_memory(
+        self,
+        image_id: str,
+        summary: str,
+        ocr_text: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        chat_id: Optional[str] = None,
+        sender_id: Optional[str] = None,
+        sender_name: Optional[str] = None,
+        timestamp: Optional[float] = None
+    ) -> dict:
+        """
+        Saves rich visual analysis, OCR, and tags into persistent image vault.
+        Survives restarts and allows long-term recall of images sent across chats.
+        """
+        if not image_id:
+            return {}
+        record = {
+            "image_id": image_id,
+            "chat_id": chat_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name or "เพื่อน",
+            "summary": summary,
+            "ocr_text": ocr_text or "",
+            "tags": tags or [],
+            "timestamp": timestamp if timestamp is not None else time.time()
+        }
+        self.image_vault[image_id] = record
+        if len(self.image_vault) > self.max_image_vault:
+            oldest_key = min(self.image_vault.keys(), key=lambda k: self.image_vault[k].get("timestamp", 0))
+            del self.image_vault[oldest_key]
+        self._save_all_memory()
+        return record
+
+    def get_visual_memory(self, image_id: Optional[str]) -> Optional[dict]:
+        """Retrieves visual description and OCR text for a specific image ID."""
+        if not image_id:
+            return None
+        return self.image_vault.get(image_id)
+
+    def search_visual_memories(
+        self,
+        chat_id: Optional[str] = None,
+        query_text: str = "",
+        limit: int = 3
+    ) -> List[dict]:
+        """
+        Searches the visual vault for relevant past images in the given chat (or globally).
+        Matches against summary, OCR text, tags, and sender name.
+        If query is general ("รูป", "ภาพ", "เมื่อกี้", "รูปนั้น"), ranks recent images highest.
+        """
+        candidates = list(self.image_vault.values())
+        if chat_id:
+            chat_matches = [c for c in candidates if c.get("chat_id") == chat_id]
+            if chat_matches:
+                candidates = chat_matches
+
+        if not candidates:
+            return []
+
+        # Sort candidates by timestamp descending (newest first)
+        candidates.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+
+        if not query_text or not query_text.strip():
+            return candidates[:limit]
+
+        q = query_text.lower().strip()
+        keywords = [w for w in q.split() if len(w) > 1]
+
+        scored = []
+        for item in candidates:
+            score = 0
+            summary = item.get("summary", "").lower()
+            ocr = item.get("ocr_text", "").lower()
+            tags = [t.lower() for t in item.get("tags", [])]
+            sender = item.get("sender_name", "").lower()
+
+            # Exact phrase match in summary or OCR
+            if q in summary:
+                score += 15
+            if q in ocr:
+                score += 15
+
+            # Bidirectional tag matching (tag in query or kw in tags)
+            for tag in tags:
+                if len(tag) > 1 and tag in q:
+                    score += 12
+
+            # Space-separated keywords
+            for kw in keywords:
+                if kw in tags:
+                    score += 10
+                if kw in summary:
+                    score += 6
+                if kw in ocr:
+                    score += 8
+                if kw in sender:
+                    score += 4
+
+            # Substring matching in summary/OCR for common Thai entities
+            for term in ["แมว", "หมา", "สลิป", "บิล", "ใบเสร็จ", "การบ้าน", "เมนู", "โค้ด", "อาหาร", "โอนเงิน", "ยอดเงิน", "กาแฟ"]:
+                if term in q and term in summary:
+                    score += 8
+                if term in q and term in ocr:
+                    score += 8
+
+            # Common recency keywords
+            if any(term in q for term in ["รูปเมื่อกี้", "เมื่อกี้", "รูปนั้น", "ล่าสุด", "รูปที่ส่ง"]):
+                score += 2
+
+            scored.append((score, item))
+
+        scored.sort(key=lambda pair: (pair[0], pair[1].get("timestamp", 0)), reverse=True)
+
+        results = [item for score, item in scored if score > 0]
+        if not results:
+            general_terms = ["รูป", "ภาพ", "สลิป", "ใบเสร็จ", "บิล", "การบ้าน", "แมว", "หมา", "โค้ด", "เมนู", "รูปภาพ"]
+            if any(t in q for t in general_terms):
+                return candidates[:limit]
+            return []
+
+        return results[:limit]
+
+
+def format_visual_memories_context(records: List[dict]) -> str:
+    """Formats visual records into a concise, high-context block for Gemini prompt."""
+    if not records:
+        return ""
+    lines = ["[ความจำรูปภาพที่เคยส่งในห้องนี้ (จำได้ตลอดและย้อนพูดถึงได้)]:"]
+    for r in records:
+        sender = r.get("sender_name", "เพื่อน")
+        summary = r.get("summary", "").strip()
+        ocr = r.get("ocr_text", "").strip()
+        tags = ", ".join(r.get("tags", []))
+        detail = f"• รูปส่งโดย {sender}: {summary}"
+        if ocr:
+            detail += f" (ข้อความในรูป/OCR: \"{ocr[:150]}\")"
+        if tags:
+            detail += f" [คีย์เวิร์ด: {tags}]"
+        lines.append(detail)
+    return "\n".join(lines)
 
 
 memory_manager = MemoryManager()

@@ -19,8 +19,8 @@ from app.persona import (
     build_goal_prompt,
     PERSONA_ALIASES
 )
-from app.memory import MemoryManager, GroupMemory, memory_manager
-from app.bot import should_trigger_response, chunk_line_text
+from app.memory import MemoryManager, GroupMemory, memory_manager, format_visual_memories_context
+from app.bot import should_trigger_response, chunk_line_text, parse_image_response
 from app.main import app
 
 
@@ -736,6 +736,119 @@ def test_smart_trigger_direct_question():
     )
     assert res.should_reply is True
     assert res.is_spontaneous is False
+
+
+def test_natural_genz_prompt_no_cringe_spam():
+    """Verify system prompt enforces natural everyday Thai without forcing cringe slang spam."""
+    prompt = build_system_prompt("Thomas", "friend")
+    assert "90% พูดคุยเหมือนคนปกติทั่วไป" in prompt
+    assert "10% มุกเฉพาะสถานการณ์" in prompt
+    assert "ห้ามยัดเยียดสแลงหรือมีมทุกคำเด็ดขาด" in prompt
+    assert "ห้ามจริตกระเทย / สาวสอง โดยเด็ดขาด 100%" in prompt
+    assert "ห้ามภาษาพากย์หนังฝรั่งหรือนิยายเด็ดขาด" in prompt
+    assert "Anti-Cringe Mandate" in prompt
+
+
+def test_easily_persuaded_trait():
+    """Verify system prompt contains friendly and easily persuaded / agreeable traits."""
+    prompt = build_system_prompt("Thomas", "friend")
+    assert "โดนโน้มน้าวได้ง่ายมาก" in prompt
+    assert "โดนป้ายยาง่าย" in prompt
+    assert "ห้ามทำตัวเป็น Debate Bro" in prompt
+    assert "เป็นมิตรที่สุด" in prompt
+
+
+def test_visual_memory_vault_persistence(tmp_path):
+    """Verify saving, loading, and querying visual memory vault."""
+    with patch("app.memory.UNIFIED_MEMORY_FILE", tmp_path / "unified.json"), \
+         patch("app.memory.BOT_MSG_IDS_FILE", tmp_path / "bot_ids.json"):
+        mgr = MemoryManager(max_history=5)
+        record = mgr.save_visual_memory(
+            image_id="img_slip_001",
+            summary="สลิปโอนเงิน KBank 500 บาท",
+            ocr_text="โอนสำเร็จ 500.00 บาท วันที่ 8 ต.ค. 2026",
+            tags=["สลิป", "500", "kbank"],
+            chat_id="room_123",
+            sender_id="user_harvey",
+            sender_name="Harvey"
+        )
+        assert record["image_id"] == "img_slip_001"
+        assert record["summary"] == "สลิปโอนเงิน KBank 500 บาท"
+
+        # Check retrieval
+        retrieved = mgr.get_visual_memory("img_slip_001")
+        assert retrieved is not None
+        assert retrieved["ocr_text"] == "โอนสำเร็จ 500.00 บาท วันที่ 8 ต.ค. 2026"
+        assert retrieved["tags"] == ["สลิป", "500", "kbank"]
+
+        # Check persistence by creating a new MemoryManager instance from disk
+        mgr2 = MemoryManager(max_history=5)
+        retrieved2 = mgr2.get_visual_memory("img_slip_001")
+        assert retrieved2 is not None
+        assert retrieved2["summary"] == "สลิปโอนเงิน KBank 500 บาท"
+
+
+def test_search_visual_memories_and_format():
+    """Verify keyword search across visual memories and context block formatting."""
+    mgr = MemoryManager(max_history=5)
+    mgr.save_visual_memory(
+        image_id="img_cat_1",
+        summary="รูปแมวสีส้มลายสลิด กำลังนอนหลับบนโซฟา",
+        ocr_text="",
+        tags=["แมว", "สัตว์เลี้ยง"],
+        chat_id="chat_test",
+        sender_name="Alice"
+    )
+    mgr.save_visual_memory(
+        image_id="img_slip_2",
+        summary="สลิปโอนเงิน SCB ค่ากาแฟ 120 บาท",
+        ocr_text="SCB EASY 120.00 บาท",
+        tags=["สลิป", "กาแฟ", "120"],
+        chat_id="chat_test",
+        sender_name="Bob"
+    )
+
+    # Search for slip
+    results_slip = mgr.search_visual_memories(chat_id="chat_test", query_text="สลิปค่ากาแฟกี่บาท")
+    assert len(results_slip) > 0
+    assert results_slip[0]["image_id"] == "img_slip_2"
+
+    # Search for cat
+    results_cat = mgr.search_visual_memories(chat_id="chat_test", query_text="แมวส้มตัวนั้น")
+    assert len(results_cat) > 0
+    assert results_cat[0]["image_id"] == "img_cat_1"
+
+    # Check formatting
+    context_str = format_visual_memories_context(results_slip)
+    assert "[ความจำรูปภาพที่เคยส่งในห้องนี้" in context_str
+    assert "สลิปโอนเงิน SCB ค่ากาแฟ 120 บาท" in context_str
+    assert "SCB EASY 120.00 บาท" in context_str
+
+
+def test_parse_image_response():
+    """Verify dual-extraction parsing of <VISUAL_RECORD> and <REPLY> tags."""
+    gemini_output = """
+<VISUAL_RECORD>
+summary: สลิปโอนเงิน 500 บาท โอนเข้าบัญชีคุณสมชาย
+ocr: ยอดโอน 500.00 บาท สำเร็จเมื่อ 14:30
+tags: สลิป, 500, โอนเงิน
+</VISUAL_RECORD>
+<REPLY>
+เห็นสลิป 500 บาทเรียบร้อยละมึง ขอบคุณมาก 555
+</REPLY>
+"""
+    reply, v_dict = parse_image_response(gemini_output)
+    assert reply == "เห็นสลิป 500 บาทเรียบร้อยละมึง ขอบคุณมาก 555"
+    assert v_dict["summary"] == "สลิปโอนเงิน 500 บาท โอนเข้าบัญชีคุณสมชาย"
+    assert v_dict["ocr_text"] == "ยอดโอน 500.00 บาท สำเร็จเมื่อ 14:30"
+    assert v_dict["tags"] == ["สลิป", "500", "โอนเงิน"]
+
+    # Fallback without tags
+    plain = "รูปนี้น่ารักมากมึง 555"
+    reply2, v_dict2 = parse_image_response(plain)
+    assert reply2 == plain
+    assert v_dict2["summary"] == plain
+
 
 
 

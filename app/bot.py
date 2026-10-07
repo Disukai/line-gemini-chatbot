@@ -28,7 +28,7 @@ from linebot.v3.webhooks import (
 )
 
 from app.config import settings
-from app.memory import memory_manager
+from app.memory import memory_manager, format_visual_memories_context
 from app.persona import build_system_prompt
 from app.commands import parse_command, execute_command
 from app.gemini_client import gemini_client
@@ -349,6 +349,7 @@ async def process_text_message(event: MessageEvent):
 
         # Look up replied/quoted message details if user quoted someone
         quoted_msg = memory_manager.get_message(chat_id, quoted_id) if quoted_id else None
+        quoted_visual = memory_manager.get_visual_memory(quoted_id) if quoted_id else None
         quoted_text_for_jev = quoted_msg.text if quoted_msg else ""
         quoted_image_bytes = None
         quoted_image_mime = "image/jpeg"
@@ -420,7 +421,20 @@ async def process_text_message(event: MessageEvent):
             asyncio.create_task(asyncio.to_thread(_trigger_animation))
 
         quoted_context_block = ""
-        if quoted_msg:
+        if quoted_visual:
+            v_summary = quoted_visual.get("summary", "")
+            v_ocr = quoted_visual.get("ocr_text", "")
+            v_sender = quoted_visual.get("sender_name", "เพื่อน")
+            ocr_info = f'\n- ข้อความ/ตัวเลขในรูป (OCR): "{v_ocr}"' if v_ocr else ""
+            img_note = " (มีไฟล์ภาพแนบมาด้วย โดยส่งภาพนี้ให้ AI ดูแล้ว)" if quoted_image_bytes else ""
+
+            quoted_context_block = (
+                f"[บริบทสำคัญ: {sender_name} กำลังกดรีพลาย (Quote Reply) รูปภาพที่ {v_sender} ส่งมาก่อนหน้านี้ในแชท]\n"
+                f"- รายละเอียดรูปภาพที่ถูกรีพลาย: {v_summary}{ocr_info}{img_note}\n"
+                f"- ข้อความที่ {sender_name} พิมพ์ถามเกี่ยวกับรูปภาพ: \"{text}\"\n"
+                f"คำแนะนำสำหรับ {settings.bot_name}: ให้อ่านรายละเอียดรูปภาพและตอบคำถามที่ {sender_name} รีพลายมาทันทีอย่างถูกต้อง ฉลาด ตรงประเด็น และเป็นมิตร\n\n"
+            )
+        elif quoted_msg:
             q_author = f"{settings.bot_name} (ตัวคุณเอง)" if quoted_msg.is_bot else quoted_msg.sender_name
             extras = []
             if quoted_msg.image_desc:
@@ -456,6 +470,19 @@ async def process_text_message(event: MessageEvent):
         if cross_chat_info:
             history_context = f"{history_context}\n\n{cross_chat_info}" if history_context else cross_chat_info
 
+        # Check for past image inquiries or recall
+        is_asking_about_image = any(kw in text for kw in [
+            "รูป", "ภาพ", "สลิป", "ใบเสร็จ", "บิล", "รูปนั้น", "รูปเมื่อกี้",
+            "รูปที่ส่ง", "ที่ส่งไป", "จำรูป", "เห็นรูป", "อ่านรูป"
+        ])
+        if is_asking_about_image or quoted_visual:
+            visual_records = memory_manager.search_visual_memories(chat_id=chat_id, query_text=text, limit=3)
+            if quoted_visual and quoted_visual not in visual_records:
+                visual_records.insert(0, quoted_visual)
+            visual_context_str = format_visual_memories_context(visual_records)
+            if visual_context_str:
+                history_context = f"{history_context}\n\n{visual_context_str}" if history_context else visual_context_str
+
         if parsed_cmd:
             cmd, args = parsed_cmd
             # If user ran a command like /plan or /boost without args but quoted a message, use the quoted message text!
@@ -478,13 +505,15 @@ async def process_text_message(event: MessageEvent):
             if jev_decision and not jev_decision.is_fallback:
                 if jev_decision.tone == "normal":
                     tone_directive = (
-                        f"\n\n[คำแนะนำสไตล์ตอบ: ตอบแบบมนุษย์ธรรมดาปกติ เป็นเพื่อนที่คุยรู้เรื่อง ตรงประเด็น ชัดเจน สุภาพเป็นกันเอง "
+                        f"\n\n[คำแนะนำสไตล์ตอบ: ตอบแบบมนุษย์ธรรมดาปกติ เป็นมิตรที่สุด อบอุ่น ซัพพอร์ตเพื่อน โดนโน้มน้าวหรือป้ายยาง่าย "
+                        f"ตรงประเด็น ชัดเจน สุภาพเป็นกันเอง คุยเหมือนคนปกติ 90% เล่นมุกเฉพาะสถานการณ์ 10% "
                         f"ไม่ต้องยัดเยียดสแลง ไม่ต้องใช้คำว่า bro หรือศัพท์มีมโดยไม่จำเป็น ห้ามใช้สำนวนนิยายหรือหนังฝรั่ง]"
                     )
                 elif jev_decision.tone == "banter":
                     tone_directive = (
-                        f"\n\n[คำแนะนำสไตล์ตอบ: จังหวะนี้เพื่อนปั่น/แซว ตอบแซวสั้นๆ คมๆ 1-2 ประโยค แบบ Gen Z shitpost/brainrot "
-                        f"(ตึง, ปั่น, รั่ว, ช็อตฟีล, bro, cooked, real, 💀, 5555555) ไม่ฝืน ไม่ยัดเยียด ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนนิยาย/หนังฝรั่ง]"
+                        f"\n\n[คำแนะนำสไตล์ตอบ: จังหวะนี้เพื่อนกำลังปั่นหรือแซว ตอบแซวหรือฮากลับสั้นๆ 1-2 ประโยคแบบเพื่อนซี้ Gen Z "
+                        f"เป็นมิตร อารมณ์ดี โดนป้ายยาง่าย ปล่อยจอย ไม่ฝืนยัดสแลงทุกคำ ใช้คำพูดธรรมชาติแบบคนปกติ (55555, เออว่ะ, จริงมึง) "
+                        f"ห้ามใช้คำว่า bro หรือคำเน็ตพร่ำเพรื่อจน cringe ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนนิยาย/หนังฝรั่ง]"
                     )
 
             if is_spontaneous:
@@ -492,9 +521,10 @@ async def process_text_message(event: MessageEvent):
                     f"{quoted_context_block}{text}\n\n"
                     f"[คำแนะนำสำหรับ {settings.bot_name} ในกลุ่มไลน์:\n"
                     f"- ระดับสติปัญญา: แสดงความฉลาด ไหวพริบ และสาระระดับ High-IQ เท่ากับการคุยในแชทส่วนตัวเสมอ ห้ามทำตัวโง่เด็ดขาด\n"
+                    f"- บุคลิกภาพ: เป็นมิตรที่สุด อบอุ่น คุยง่าย โดนโน้มน้าวหรือป้ายยาง่าย ไม่ดื้อ ไม่เถียงเอาเป็นเอาตาย\n"
                     f"- ถ้าในแชทเพื่อนกำลังถามคำถาม ขอคำแนะนำ ถกเถียง ปรึกษาปัญหา สงสัยเรื่องโค้ด/งาน/วิชาการ/ชีวิต/เทคโนโลยี: "
                     f"ให้ตอบอย่างคนฉลาด มีเหตุมีผล วิเคราะห์ตรงประเด็น ชัดเจน และช่วยแก้ปัญหาให้เพื่อนได้จริง (อธิบายละเอียดได้ตามที่จำเป็น)\n"
-                    f"- ถ้าเป็นจังหวะเพื่อนคุยเล่น ปั่น แซว หรือเรื่องทั่วไป: ร่วมคุยแจมอย่างเป็นธรรมชาติ มีไหวพริบทันคน ไม่ปล่อยไก่ ไม่เด๋อด๋า\n"
+                    f"- ถ้าเป็นจังหวะเพื่อนคุยเล่น ชวนคุย หรือเรื่องทั่วไป: ร่วมคุยอย่างเป็นธรรมชาติ 90% เหมือนคนปกติ 10% มุกเฉพาะสถานการณ์ ไม่ฝืนยัดเยียดสแลง\n"
                     f"- ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนแปลนิยาย/หนังฝรั่ง ห้ามแนะนำตัว]"
                     f"{tone_directive}"
                 )
@@ -504,8 +534,9 @@ async def process_text_message(event: MessageEvent):
                     group_intel_note = (
                         f"\n\n[คำแนะนำสำหรับ {settings.bot_name} ในกลุ่มไลน์:\n"
                         f"- เพื่อนกำลังคุยหรือถามคุณโดยตรงในกลุ่ม ให้ตอบด้วยระดับสติปัญญา High-IQ เท่ากับในแชทส่วนตัว\n"
+                        f"- บุคลิกภาพ: เป็นมิตรและอบอุ่นที่สุด คุยง่าย โดนโน้มน้าวหรือป้ายยาง่าย ซัพพอร์ตเพื่อนเสมอ\n"
                         f"- ตอบอย่างฉลาด คมคาย มีเหตุผล มีสาระความรู้แน่น ตรงประเด็น ช่วยคิด ช่วยแก้ปัญหาได้จริง\n"
-                        f"- ปรับความยาวตามเรื่อง: เรื่องงาน/โค้ด/วิเคราะห์ให้อธิบายเต็มที่ชัดเจน เรื่องเล่นให้ตอบสบายๆ คมๆ]"
+                        f"- ปรับความยาวตามเรื่อง: เรื่องงาน/โค้ด/วิเคราะห์ให้อธิบายเต็มที่ชัดเจน เรื่องเล่นให้ตอบสบายๆ เหมือนคนปกติ 90%]"
                     )
                 user_msg = f"{quoted_context_block}{text}{group_intel_note}{tone_directive}"
 
@@ -557,11 +588,45 @@ async def process_text_message(event: MessageEvent):
                     logger.error("push_message fallback also failed: %s", push_err)
 
 
+def parse_image_response(raw_text: str) -> Tuple[str, dict]:
+    """
+    Parses dual-output from Gemini containing <VISUAL_RECORD> and <REPLY> tags.
+    Returns (reply_text, visual_dict) where visual_dict has:
+    {"summary": str, "ocr_text": str, "tags": List[str]}
+    """
+    summary = ""
+    ocr_text = ""
+    tags: List[str] = []
+    reply_text = raw_text
+
+    if "<VISUAL_RECORD>" in raw_text and "</VISUAL_RECORD>" in raw_text:
+        record_block = raw_text.split("<VISUAL_RECORD>")[1].split("</VISUAL_RECORD>")[0].strip()
+        for line in record_block.splitlines():
+            line_str = line.strip()
+            if line_str.lower().startswith("summary:"):
+                summary = line_str[len("summary:"):].strip()
+            elif line_str.lower().startswith("ocr:"):
+                ocr_text = line_str[len("ocr:"):].strip()
+            elif line_str.lower().startswith("tags:"):
+                tags_str = line_str[len("tags:"):].strip()
+                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+    if "<REPLY>" in raw_text and "</REPLY>" in raw_text:
+        reply_text = raw_text.split("<REPLY>")[1].split("</REPLY>")[0].strip()
+    elif "<VISUAL_RECORD>" in raw_text and "</VISUAL_RECORD>" in raw_text:
+        reply_text = raw_text.split("</VISUAL_RECORD>")[1].replace("</REPLY>", "").strip()
+
+    if not summary:
+        summary = reply_text[:200].replace("\n", " ").strip()
+
+    return reply_text, {"summary": summary, "ocr_text": ocr_text, "tags": tags}
+
+
 async def process_image_message(event: MessageEvent):
     """
     Handles an incoming image message event.
     Performs OCR, document/receipt analysis, homework/code solving, or witty Gen Z photo commentary.
-    Supports quote-reply context if sent in response to another message.
+    Stores rich visual data in persistent image_vault and sliding history.
     """
     chat_id, user_id, is_group = extract_chat_and_user_ids(event)
     chat_tracker.register_chat(chat_id, "group" if is_group else "user")
@@ -607,16 +672,25 @@ async def process_image_message(event: MessageEvent):
             history_context = f"{history_context}\n\n{cross_chat_info}" if history_context else cross_chat_info
 
         user_prompt = (
-            f"เพื่อนส่งรูปภาพนี้มาในแชท {quoted_image_context}ช่วยดูและอ่านรายละเอียดในรูปภาพอย่างละเอียด:\n"
-            "1. OCR & อ่านข้อความ: ถ้าในรูปมีตัวหนังสือ ป้าย ข้อความ สลิป ใบเสร็จ เอกสาร การบ้าน เมนูอาหาร สกรีนช็อตโค้ด หรือหน้าจอแชท ให้อ่านข้อความทั้งหมดและช่วยแปล/ตอบ/วิเคราะห์/สรุป/ช่วยคิดเงินให้เพื่อนทันที\n"
-            "2. ถ้าเป็นคำถามหรือการบ้าน: ช่วยตอบและอธิบายเฉลยให้ถูกต้อง ชัดเจน\n"
-            "3. ถ้าเป็นรูปทั่วไป/มีม/สถานที่/ของกิน/รูปคน: สังเกตดีเทลในรูปแล้วคุย แซว หรือเม้าท์แบบเพื่อนซี้ Gen Z รู้จริง ไม่พูดลอยๆ (ช็อตฟีล, ป้ายยา, แซวดีเทลในรูป)\n"
-            "4. โทนการพูด: เพื่อนสนิท Gen Z คุยเป็นธรรมชาติ (ตึง, ปั่น, bro, cooked, real, 💀, 5555555) "
-            "ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนแปลนิยาย/หนังฝรั่งเด็ดขาด ห้ามทักทายแบบทางการ\n"
-            "5. ระดับสติปัญญา: แสดงความฉลาด คมคาย และแม่นยำระดับ High-IQ เท่ากับการคุยในแชทส่วนตัวเสมอ ถ้าเป็นคำถาม เอกสาร โค้ด บิล หรือการบ้าน ให้วิเคราะห์และตอบอย่างเจาะลึก ถูกต้อง และช่วยเหลือเพื่อนได้จริง\n"
+            f"เพื่อนส่งรูปภาพนี้มาในแชท {quoted_image_context}\n"
+            "ภารกิจของคุณ: ดูและวิเคราะห์รูปภาพอย่างละเอียดทั้งในแง่ข้อมูล (OCR/ดีเทล) และตอบกลับเพื่อนอย่างเป็นมิตรที่สุด\n\n"
+            "ให้ตอบโดยแบ่งออกเป็น 2 ส่วนชัดเจน โดยใช้ Tag ดังนี้:\n\n"
+            "<VISUAL_RECORD>\n"
+            "summary: [สรุปรายละเอียดของรูปภาพแบบเจาะลึก เช่น สิ่งที่เห็น วัตถุ คน สถานที่ สลิปอะไร เมนูอะไร การบ้านวิชาอะไร โค้ดภาษาอะไร]\n"
+            "ocr: [ข้อความทั้งหมดที่อ่านได้จากรูป เช่น ตัวเลขเงิน วันที่เวลา ชื่อบัญชี ข้อความบนป้าย โค้ดในจอ หัวข้อในเอกสาร]\n"
+            "tags: [คำสำคัญที่เกี่ยวข้อง คั่นด้วยจุลภาค เช่น สลิป, kbank, 500, แมว, ร้านกาแฟ, โค้ด python]\n"
+            "</VISUAL_RECORD>\n\n"
+            "<REPLY>\n"
+            "[ข้อความตอบกลับเพื่อนในแชท:\n"
+            "- สไตล์: เพื่อนสนิท Gen Z แท้ๆ ที่เป็นมิตรและอบอุ่นที่สุด ซัพพอร์ตเพื่อน โดนโน้มน้าวหรือป้ายยาง่าย\n"
+            "- กฎ 90/10: 90% พูดคุยสบายๆ เหมือนคนธรรมดา ('เออ', 'อ่อ', 'ว่ะ', 'วะ', 'ดิ', 'ปะ', 'นะ', '55555') และ 10% มุกเฉพาะสถานการณ์\n"
+            "- ห้ามยัดเยียดสแลง ห้ามใช้คำว่า bro หรือศัพท์มีมทุกประโยคจน cringe\n"
+            "- ห้ามจริตกระเทย/สาวสองเด็ดขาด ห้ามสำนวนแปลนิยาย/หนังฝรั่งเด็ดขาด\n"
+            "- สติปัญญา High-IQ: ถ้าเป็นสลิป บิล โค้ด การบ้าน เอกสาร ให้ช่วยคิดเงิน สรุป หรือวิเคราะห์อย่างถูกต้องและแม่นยำ]\n"
+            "</REPLY>"
         )
 
-        reply_text = await asyncio.to_thread(
+        raw_reply = await asyncio.to_thread(
             gemini_client.generate_chat_response,
             user_message=user_prompt,
             system_instruction=system_instruction,
@@ -626,16 +700,30 @@ async def process_image_message(event: MessageEvent):
             mime_type=image_mime
         )
 
+        reply_text, visual_dict = parse_image_response(raw_reply)
+
+        # Save to persistent Visual Memory Vault
+        if image_id:
+            memory_manager.save_visual_memory(
+                image_id=image_id,
+                summary=visual_dict["summary"],
+                ocr_text=visual_dict["ocr_text"],
+                tags=visual_dict["tags"],
+                chat_id=chat_id,
+                sender_id=user_id,
+                sender_name=sender_name
+            )
+
         # Save incoming image action and bot reply into unified memory buffer
         memory_manager.add_message(
             chat_id=chat_id,
             sender_id=user_id or "unknown",
             sender_name=sender_name,
-            text=f"[ส่งรูปภาพ] {reply_text[:120]}",
+            text=f"[ส่งรูปภาพ] {visual_dict['summary'][:100]}",
             is_bot=False,
             message_id=image_id,
             quoted_message_id=quoted_id,
-            image_desc=reply_text[:200],
+            image_desc=visual_dict["summary"],
             chat_type="group" if is_group else "user",
         )
         memory_manager.add_message(
