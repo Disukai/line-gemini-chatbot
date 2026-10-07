@@ -171,10 +171,10 @@ class Settings(BaseSettings):
         base = [
             "gemini-3.8-flash",
             self.gemini_model,
-            "gemini-3.6-flash",
-            "gemini-3.7-flash",
             "gemini-3.1-flash-lite",
             "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
             "gemini-flash-lite-latest",
             "gemini-flash-latest"
         ]

@@ -143,13 +143,13 @@ class GeminiClient:
                     if self._working_model == model_name:
                         self._working_model = None
                 elif "503" in err_str:
-                    # Temporary demand spike: blacklist for 1 minute
-                    self._bad_models[model_name] = now + 60
+                    # Temporary demand spike: blacklist for 5 minutes
+                    self._bad_models[model_name] = now + 300
                     if self._working_model == model_name:
                         self._working_model = None
 
         logger.error("All Gemini model candidates failed. Last error: %s", last_error)
-        return "แป๊บนะมึง สมองเบลอชั่วคราว ฝั่ง API กำลัง cooked ทักมาใหม่อีกทีดิ๊ 5555555"
+        return "แป๊บนะมึง สมองเบลอชั่วคราว ฝั่ง API กำลังเอ๋อ ลองทักมาใหม่อีกทีนะ 5555555"
 
 
 gemini_client = GeminiClient()
